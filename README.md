@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # BrandLens
 
 Pre-publication brand-governance platform. See `SRS.md` for the full specification.
@@ -26,3 +27,6 @@ npm run dev              # http://localhost:5173
 2. **Render (server):** Root Directory `server`, Build Command `npm install`, Start Command `node src/index.js`. Env vars: `MONGODB_URI`, `JWT_SECRET`, `CLIENT_ORIGIN` (the Vercel URL, no trailing slash), `LLM_TIMEOUT_MS=20000`. Free instances sleep, so the first request after idle can take about 50 seconds.
 3. **Vercel (client):** Root Directory `client`, Build Command `npm run build`, Output `dist`. Env var `VITE_API_URL` = the Render URL. Vite bakes this in at build time, so redeploy after changing it. `vercel.json` rewrites all paths to `index.html` so deep links work.
 4. After both are live, set Render's `CLIENT_ORIGIN` to the final Vercel URL and redeploy the server.
+=======
+# BrandLense
+>>>>>>> 775b1f6af73ba6c57981426c36c9065a195e75a0
