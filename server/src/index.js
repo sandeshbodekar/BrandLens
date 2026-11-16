@@ -7,6 +7,10 @@ async function start() {
     console.error('MONGODB_URI is not set. Copy .env.example to .env and fill it in.');
     process.exit(1);
   }
+  if (!config.jwtSecret) {
+    console.error('JWT_SECRET is not set. Add a long random string to server/.env.');
+    process.exit(1);
+  }
 
   try {
     // Fail within 10 s (instead of the default 30 s) if Atlas is unreachable.

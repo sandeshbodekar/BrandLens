@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import morgan from 'morgan';
 import { config } from './config.js';
+import authRoutes from './routes/auth.js';
 
 const app = express();
 
@@ -17,5 +18,8 @@ app.use(morgan('dev'));
 app.get('/api/health', (req, res) => {
   res.json({ ok: true });
 });
+
+// SRS 7.1
+app.use('/api/auth', authRoutes);
 
 export default app;
