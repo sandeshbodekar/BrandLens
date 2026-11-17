@@ -29,10 +29,11 @@ export function clearToken() {
 }
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, details) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
+    this.details = details; // field errors from a 400 [{path, message}], if any
   }
 }
 
@@ -72,7 +73,7 @@ async function request(method, path, body, options = {}) {
 
   if (!res.ok) {
     if (res.status === 401 && token && onUnauthorized) onUnauthorized();
-    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status);
+    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status, data?.errors);
   }
   return data;
 }
