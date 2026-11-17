@@ -4,6 +4,10 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import { config } from './config.js';
 import authRoutes from './routes/auth.js';
+import clauseRoutes from './routes/clauses.js';
+import factRoutes from './routes/facts.js';
+import termRoutes from './routes/terms.js';
+import demoRoutes from './routes/demo.js';
 
 const app = express();
 
@@ -21,5 +25,13 @@ app.get('/api/health', (req, res) => {
 
 // SRS 7.1
 app.use('/api/auth', authRoutes);
+
+// SRS 7.2: knowledge base
+app.use('/api/clauses', clauseRoutes);
+app.use('/api/facts', factRoutes);
+app.use('/api/terms', termRoutes);
+
+// SRS 7.7
+app.use('/api/demo', demoRoutes);
 
 export default app;
