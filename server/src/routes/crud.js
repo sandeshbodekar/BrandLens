@@ -1,0 +1,96 @@
+import { Router } from 'express';
+import mongoose from 'mongoose';
+import { auth } from '../middleware/auth.js';
+import { requireRole } from '../middleware/requireRole.js';
+import { validate } from '../middleware/validate.js';
+
+// Builds GET / POST / PUT / DELETE for one knowledge-base collection.
+// Used by clauses, facts and terms so the three routes behave identically.
+//   - everyone logged in can read (SRS 7.2)
+//   - only admin can write
+//   - every query includes workspaceId, so one workspace can never touch another's data
+//
+// Options:
+//   Model, label, sort       the Mongoose model, a name for messages, and the list order
+//   createSchema/updateSchema zod schemas for the request body (update defaults to create)
+//   checkWrite(req)          optional: return an error string to reject a create/update
+//   checkDelete(doc, req)    optional: return an error string to block a delete
+export function crudRouter({
+  Model,
+  label,
+  sort,
+  createSchema,
+  updateSchema = createSchema,
+  checkWrite,
+  checkDelete,
+}) {
+  const router = Router();
+  router.use(auth);
+  const adminOnly = requireRole('admin');
+
+  const validId = (req, res, next) =>
+    mongoose.isValidObjectId(req.params.id)
+      ? next()
+      : res.status(400).json({ message: 'Invalid id' });
+
+  // 11000 = Mongo duplicate-key error (the unique workspaceId+code index).
+  const fail = (err, res, next) =>
+    err?.code === 11000
+      ? res.status(409).json({ message: `A ${label} with that code already exists` })
+      : next(err);
+
+  // numericOrdering makes "F-9" sort before "F-12" instead of after it.
+  router.get('/', async (req, res, next) => {
+    try {
+      const items = await Model.find({ workspaceId: req.workspaceId })
+        .sort(sort)
+        .collation({ locale: 'en', numericOrdering: true });
+      res.json(items);
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/', adminOnly, validate(createSchema), async (req, res, next) => {
+    try {
+      const problem = checkWrite && (await checkWrite(req));
+      if (problem) return res.status(400).json({ message: problem });
+      // workspaceId always comes from the token, never from the request body.
+      const item = await Model.create({ ...req.body, workspaceId: req.workspaceId });
+      res.status(201).json(item);
+    } catch (err) {
+      fail(err, res, next);
+    }
+  });
+
+  router.put('/:id', adminOnly, validId, validate(updateSchema), async (req, res, next) => {
+    try {
+      const problem = checkWrite && (await checkWrite(req));
+      if (problem) return res.status(400).json({ message: problem });
+      const item = await Model.findOneAndUpdate(
+        { _id: req.params.id, workspaceId: req.workspaceId },
+        req.body,
+        { new: true, runValidators: true }
+      );
+      if (!item) return res.status(404).json({ message: `${label} not found` });
+      res.json(item);
+    } catch (err) {
+      fail(err, res, next);
+    }
+  });
+
+  router.delete('/:id', adminOnly, validId, async (req, res, next) => {
+    try {
+      const item = await Model.findOne({ _id: req.params.id, workspaceId: req.workspaceId });
+      if (!item) return res.status(404).json({ message: `${label} not found` });
+      const problem = checkDelete && (await checkDelete(item, req));
+      if (problem) return res.status(409).json({ message: problem });
+      await item.deleteOne();
+      res.status(204).end();
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  return router;
+}
