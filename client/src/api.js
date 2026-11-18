@@ -1,11 +1,9 @@
+// Fetch wrapper used by every page and by AuthContext.
+// Exports: api (get/post/put/patch/delete), getToken/setToken/clearToken,
+// setOnUnauthorized, ApiError.
+const BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const TOKEN_KEY = 'brandlens_token';
 
-// Base URL comes from VITE_API_URL (baked in at build time by Vite).
-export const API_URL = (
-  import.meta.env.VITE_API_URL ?? 'http://localhost:5000'
-).replace(/\/$/, '');
-
-// localStorage can throw (private mode, blocked storage), so every access is guarded.
 export function getToken() {
   try {
     return localStorage.getItem(TOKEN_KEY);
@@ -17,7 +15,7 @@ export function setToken(token) {
   try {
     localStorage.setItem(TOKEN_KEY, token);
   } catch {
-    /* ignore */
+    /* storage blocked: the session just will not survive a reload */
   }
 }
 export function clearToken() {
@@ -28,60 +26,59 @@ export function clearToken() {
   }
 }
 
-export class ApiError extends Error {
-  constructor(message, status, details) {
-    super(message);
-    this.name = 'ApiError';
-    this.status = status;
-    this.details = details; // field errors from a 400 [{path, message}], if any
-  }
-}
-
-// AuthContext registers a callback here so any 401 (expired token) logs the user out.
+// AuthContext registers its logout here, so an expired token (401) logs the user out.
 let onUnauthorized = null;
 export function setOnUnauthorized(fn) {
   onUnauthorized = fn;
 }
 
-async function request(method, path, body, options = {}) {
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.status = status;
+  }
+}
+
+async function request(path, { method = 'GET', body } = {}) {
+  const headers = {};
   const token = getToken();
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
   let res;
   try {
-    res = await fetch(`${API_URL}${path}`, {
+    res = await fetch(`${BASE}${path}`, {
       method,
-      headers: {
-        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      },
+      headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
-      signal: options.signal,
     });
-  } catch (err) {
-    if (err.name === 'AbortError') throw err;
-    throw new ApiError(
-      'Cannot reach the server. If it was idle, wait a minute and try again.',
-      0
-    );
+  } catch {
+    throw new ApiError('Cannot reach the server. Check your connection and try again.', 0);
   }
 
   let data = null;
   try {
-    data = await res.json();
+    data = await res.json(); // 204 (delete) has no body
   } catch {
     /* empty or non-JSON body */
   }
 
   if (!res.ok) {
-    if (res.status === 401 && token && onUnauthorized) onUnauthorized();
-    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status, data?.errors);
+    // A 401 while holding a token means it expired or is invalid: log out.
+    // A 401 with no token (wrong password on the login form) just shows its message.
+    if (res.status === 401 && token) {
+      clearToken();
+      if (onUnauthorized) onUnauthorized();
+    }
+    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status);
   }
   return data;
 }
 
 export const api = {
-  get: (path, options) => request('GET', path, undefined, options),
-  post: (path, body, options) => request('POST', path, body ?? {}, options),
-  put: (path, body, options) => request('PUT', path, body ?? {}, options),
-  patch: (path, body, options) => request('PATCH', path, body ?? {}, options),
-  delete: (path, options) => request('DELETE', path, undefined, options),
+  get: (path) => request(path),
+  post: (path, body) => request(path, { method: 'POST', body: body ?? {} }),
+  put: (path, body) => request(path, { method: 'PUT', body }),
+  patch: (path, body) => request(path, { method: 'PATCH', body }),
+  delete: (path) => request(path, { method: 'DELETE' }),
 };
