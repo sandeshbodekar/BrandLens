@@ -9,6 +9,9 @@ import { Term } from '../models/Term.js';
 import { Draft } from '../models/Draft.js';
 import { DraftVersion } from '../models/DraftVersion.js';
 import { Finding } from '../models/Finding.js';
+import { Comment } from '../models/Comment.js';
+import { Review } from '../models/Review.js';
+import { AuditLog } from '../models/AuditLog.js';
 import {
   WORKSPACE,
   DEMO_PASSWORD,
@@ -39,12 +42,16 @@ export async function ensureWorkspaceAndUsers() {
   return workspace;
 }
 
-// Versions and findings only carry a draftId, so find the workspace's drafts first.
+// Versions, findings, comments and reviews only carry a draftId, so find the
+// workspace's drafts first. AuditLog has its own workspaceId.
 async function wipeDrafts(workspaceId) {
   const ids = (await Draft.find({ workspaceId }).select('_id').lean()).map((d) => d._id);
   await Promise.all([
     Finding.deleteMany({ draftId: { $in: ids } }),
     DraftVersion.deleteMany({ draftId: { $in: ids } }),
+    Comment.deleteMany({ draftId: { $in: ids } }),
+    Review.deleteMany({ draftId: { $in: ids } }),
+    AuditLog.deleteMany({ workspaceId }),
   ]);
   await Draft.deleteMany({ workspaceId });
 }
@@ -79,7 +86,6 @@ async function createSampleDrafts(workspaceId) {
 
 // Wipe this workspace's data and load the FreshNest knowledge base and sample
 // drafts again. Also used by POST /api/demo/reset. Users are NOT touched.
-// Phase 6 and later: add Comment, Review and AuditLog to the wipe below.
 export async function reseedWorkspace(workspace) {
   const workspaceId = workspace._id;
 

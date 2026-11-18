@@ -6,6 +6,7 @@ import { requireRole } from '../middleware/requireRole.js';
 import { validate } from '../middleware/validate.js';
 import { Draft } from '../models/Draft.js';
 import { Finding } from '../models/Finding.js';
+import { logAudit } from '../services/audit.js';
 
 const router = Router();
 router.use(auth);
@@ -64,6 +65,13 @@ router.patch('/:id', requireRole('creator', 'admin'), validate(decisionSchema), 
     finding.decidedAt = new Date();
     await finding.save();
 
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: 'finding_decided',
+      entityId: draft._id, // filed under the draft so its trail shows it
+      meta: { findingId: finding._id, decision, severity: finding.severity, reason: finding.decisionReason },
+    });
     res.json(finding);
   } catch (err) {
     next(err);

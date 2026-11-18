@@ -9,6 +9,7 @@ import factRoutes from './routes/facts.js';
 import termRoutes from './routes/terms.js';
 import demoRoutes from './routes/demo.js';
 import draftRoutes from './routes/drafts.js';
+import commentRoutes from './routes/comments.js';
 import findingRoutes from './routes/findings.js';
 
 const app = express();
@@ -33,7 +34,11 @@ app.use('/api/clauses', clauseRoutes);
 app.use('/api/facts', factRoutes);
 app.use('/api/terms', termRoutes);
 
-// SRS 7.3, 7.4
+// SRS 7.6: /:id/comments and /:id/audit. Mounted on the same prefix as the drafts
+// router; the paths do not overlap, so the order does not matter.
+app.use('/api/drafts', commentRoutes);
+
+// SRS 7.3, 7.4, 7.5, 7.6
 app.use('/api/drafts', draftRoutes);
 
 // SRS 7.5

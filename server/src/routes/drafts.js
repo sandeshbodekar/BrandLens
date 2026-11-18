@@ -1,12 +1,15 @@
 import { Router } from 'express';
-import mongoose from 'mongoose';
 import { z } from 'zod';
 import { auth } from '../middleware/auth.js';
 import { requireRole } from '../middleware/requireRole.js';
 import { validate } from '../middleware/validate.js';
+import { loadVisibleDraft, visibleTo } from '../services/draftAccess.js';
+import { logAudit } from '../services/audit.js';
 import { Draft, CONTENT_TYPES, DRAFT_STATUSES } from '../models/Draft.js';
 import { DraftVersion } from '../models/DraftVersion.js';
 import { Finding } from '../models/Finding.js';
+import { Comment } from '../models/Comment.js';
+import { Review, REVIEW_DECISIONS } from '../models/Review.js';
 import { Workspace } from '../models/Workspace.js';
 import { runReview } from '../services/reviewPipeline.js';
 import { applyFixes } from '../services/applyFixes.js';
@@ -14,7 +17,6 @@ import { applyFixes } from '../services/applyFixes.js';
 const router = Router();
 router.use(auth);
 
-const REVIEWER_STATUSES = ['submitted', 'approved', 'changes_requested'];
 const REVIEWABLE_STATUSES = ['draft', 'checked']; // see the review route below
 // A draft can get a new version while it is being worked on. Submitted drafts wait
 // for the reviewer, approved drafts are locked (SRS 6).
@@ -22,29 +24,7 @@ const EDITABLE_STATUSES = ['draft', 'checked', 'changes_requested'];
 const MAX_TEXT = 10000; // SRS 7.3
 const reviewsRunning = new Set(); // draft ids with a review in progress
 
-// SRS 7.3 visibility: creators see their own drafts, reviewers see drafts that
-// have been submitted, admins see everything. Always inside the user's workspace.
-function visibleTo(user, workspaceId) {
-  const filter = { workspaceId };
-  if (user.role === 'creator') filter.createdBy = user._id;
-  if (user.role === 'reviewer') filter.status = { $in: REVIEWER_STATUSES };
-  return filter;
-}
-
-// Loads a draft the current user is allowed to see, or answers 400/404 itself.
-// A draft hidden from this user gets 404 (not 403), so its existence is not revealed.
-async function loadVisibleDraft(req, res) {
-  if (!mongoose.isValidObjectId(req.params.id)) {
-    res.status(400).json({ message: 'Invalid id' });
-    return null;
-  }
-  const draft = await Draft.findOne({ _id: req.params.id, ...visibleTo(req.user, req.workspaceId) });
-  if (!draft) {
-    res.status(404).json({ message: 'Draft not found' });
-    return null;
-  }
-  return draft;
-}
+const CHANGED_MESSAGE = 'This draft was changed in another tab. Reload the page and try again.';
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(200),
@@ -76,6 +56,13 @@ router.post('/', requireRole('creator', 'admin'), validate(createSchema), async 
       await Draft.deleteOne({ _id: draft._id }); // don't leave a draft without a version
       throw err;
     }
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: 'draft_created',
+      entityId: draft._id,
+      meta: { contentType },
+    });
     res.status(201).json({ draft, text });
   } catch (err) {
     next(err);
@@ -97,23 +84,28 @@ router.get('/', async (req, res, next) => {
 });
 
 // GET /api/drafts/:id -> draft, current version text, its findings, comments, versions
+// `reviews` (the reviewers' decisions and notes) is an addition so the creator can read
+// the note after "changes requested".
 router.get('/:id', async (req, res, next) => {
   try {
     const draft = await loadVisibleDraft(req, res);
     if (!draft) return;
 
-    const [current, findings, versions] = await Promise.all([
+    const [current, findings, versions, comments, reviews] = await Promise.all([
       DraftVersion.findOne({ draftId: draft._id, version: draft.currentVersion }),
       Finding.find({ draftId: draft._id, version: draft.currentVersion }).sort({ start: 1, _id: 1 }),
       DraftVersion.find({ draftId: draft._id }, { text: 0 }).sort({ version: 1 }),
+      Comment.forDraft(draft._id),
+      Review.find({ draftId: draft._id }).sort({ createdAt: 1 }).populate('reviewerId', 'name'),
     ]);
 
     res.json({
       draft,
       text: current ? current.text : '',
       findings,
-      comments: [], // Comments are built in Phase 6; the key is here so the response shape is final
+      comments,
       versions,
+      reviews,
     });
   } catch (err) {
     next(err);
@@ -142,7 +134,25 @@ router.post('/:id/review', requireRole('creator', 'admin'), async (req, res, nex
     reviewsRunning.add(lockKey);
 
     const workspace = await Workspace.findById(req.workspaceId);
-    res.json(await runReview({ draft, workspace }));
+    const result = await runReview({ draft, workspace });
+
+    const count = (severity) => result.findings.filter((f) => f.severity === severity).length;
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: 'review_run', // SRS 8 step 5
+      entityId: draft._id,
+      meta: {
+        version: draft.currentVersion,
+        findings: result.findings.length,
+        high: count('high'),
+        medium: count('medium'),
+        low: count('low'),
+        mode: result.mode,
+        dropped: result.dropped,
+      },
+    });
+    res.json(result);
   } catch (err) {
     next(err);
   } finally {
@@ -192,8 +202,6 @@ async function saveNewVersion({ draft, text, note, userId }) {
   return next;
 }
 
-const CHANGED_MESSAGE = 'This draft was changed in another tab. Reload the page and try again.';
-
 const textSchema = z.object({
   text: z
     .string()
@@ -223,6 +231,13 @@ router.put('/:id/text', requireRole('creator', 'admin'), validate(textSchema), a
     });
     if (version === null) return res.status(409).json({ message: CHANGED_MESSAGE });
 
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: 'version_saved',
+      entityId: draft._id,
+      meta: { version },
+    });
     res.json({ draft: await Draft.findById(draft._id), version, text: req.body.text });
   } catch (err) {
     next(err);
@@ -284,6 +299,13 @@ router.post('/:id/apply-accepted', requireRole('creator', 'admin'), async (req, 
     });
     if (version === null) return res.status(409).json({ message: CHANGED_MESSAGE });
 
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: 'fixes_applied',
+      entityId: draft._id,
+      meta: { version, applied: result.applied, skipped: result.skipped },
+    });
     res.json({
       draft: await Draft.findById(draft._id),
       version,
@@ -291,6 +313,115 @@ router.post('/:id/apply-accepted', requireRole('creator', 'admin'), async (req, 
       applied: result.applied,
       skipped: result.skipped,
     });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/drafts/:id/submit -> "checked" becomes "submitted" (SRS 6 and 7.6). Creator only.
+// "checked" already proves the current version was reviewed: any new version resets the
+// status to "draft". On top of that, no HIGH finding may still be pending.
+router.post('/:id/submit', requireRole('creator'), async (req, res, next) => {
+  try {
+    const draft = await loadVisibleDraft(req, res);
+    if (!draft) return;
+
+    if (reviewsRunning.has(String(draft._id))) {
+      return res.status(409).json({ message: 'A review is running for this draft. Try again in a moment.' });
+    }
+    if (draft.status !== 'checked') {
+      return res.status(409).json({
+        message:
+          draft.status === 'draft'
+            ? 'Run a review on the current version before submitting it.'
+            : `A draft that is "${draft.status}" cannot be submitted.`,
+      });
+    }
+
+    const pendingHigh = await Finding.countDocuments({
+      draftId: draft._id,
+      version: draft.currentVersion,
+      severity: 'high',
+      decision: 'pending',
+    });
+    if (pendingHigh > 0) {
+      return res.status(409).json({
+        message: `${pendingHigh} high severity ${pendingHigh === 1 ? 'finding is' : 'findings are'} still pending. Accept, edit or dismiss (with a reason) each one first.`,
+      });
+    }
+
+    // The filter repeats the status and version we just checked, so two clicks or two
+    // tabs cannot both succeed.
+    const result = await Draft.updateOne(
+      { _id: draft._id, status: 'checked', currentVersion: draft.currentVersion },
+      { $set: { status: 'submitted' } }
+    );
+    if (result.modifiedCount !== 1) return res.status(409).json({ message: CHANGED_MESSAGE });
+
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: 'draft_submitted',
+      entityId: draft._id,
+      meta: { version: draft.currentVersion },
+    });
+    res.json({ draft: await Draft.findById(draft._id) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+const decisionSchema = z
+  .object({
+    decision: z.enum(REVIEW_DECISIONS),
+    note: z.string().trim().max(1000).default(''),
+  })
+  .refine((b) => b.decision !== 'changes_requested' || b.note.length > 0, {
+    message: 'A note is required when requesting changes',
+    path: ['note'],
+  });
+
+// POST /api/drafts/:id/decision {decision, note} (SRS 7.6). Reviewer or admin only.
+router.post('/:id/decision', requireRole('reviewer', 'admin'), validate(decisionSchema), async (req, res, next) => {
+  try {
+    const draft = await loadVisibleDraft(req, res);
+    if (!draft) return;
+
+    if (draft.status !== 'submitted') {
+      return res.status(409).json({ message: 'Only a submitted draft can be approved or sent back' });
+    }
+    const { decision, note } = req.body;
+
+    // Status first, atomically: only one decision can win if two reviewers click at once.
+    const result = await Draft.updateOne(
+      { _id: draft._id, status: 'submitted', currentVersion: draft.currentVersion },
+      { $set: { status: decision } } // 'approved' or 'changes_requested' are also the draft statuses
+    );
+    if (result.modifiedCount !== 1) return res.status(409).json({ message: CHANGED_MESSAGE });
+
+    let review;
+    try {
+      review = await Review.create({
+        draftId: draft._id,
+        version: draft.currentVersion,
+        reviewerId: req.user._id,
+        decision,
+        note,
+      });
+    } catch (err) {
+      // Do not leave a decided draft without its Review row: put it back in the queue.
+      await Draft.updateOne({ _id: draft._id }, { $set: { status: 'submitted' } });
+      throw err;
+    }
+
+    await logAudit({
+      workspaceId: req.workspaceId,
+      actorId: req.user._id,
+      action: decision === 'approved' ? 'draft_approved' : 'changes_requested',
+      entityId: draft._id,
+      meta: { version: draft.currentVersion, note },
+    });
+    res.json({ draft: await Draft.findById(draft._id), review });
   } catch (err) {
     next(err);
   }
