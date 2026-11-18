@@ -103,3 +103,28 @@ export const TERMS = [
     note: '',
   },
 ];
+
+// Sample drafts for the creator user (SRS 11). Texts are exact, so the expected
+// findings in the SRS match what the review produces.
+export const SAMPLE_DRAFTS = [
+  {
+    title: 'Summer launch post',
+    contentType: 'post',
+    text: "Our juice is India's #1 healthiest drink and 100% sugar free - guaranteed to boost immunity! Buy now at just Rs 99 (offer valid till Dec).",
+  },
+  {
+    title: 'Clean announcement',
+    contentType: 'post',
+    text: 'Meet our new mango cold-pressed juice. Made in small batches in Pune with no added sugar. Available now for Rs 109.',
+  },
+  {
+    title: 'Weekend email',
+    contentType: 'email',
+    text: 'HURRY!!! Our DETOX juice pack is selling out FAST!!! Grab 2 bottles at Rs 99 each.',
+  },
+  {
+    title: 'Product page copy',
+    contentType: 'document',
+    text: 'Our miracle green juice is a natural cure for tiredness and the fastest way to get your vitamins.',
+  },
+];

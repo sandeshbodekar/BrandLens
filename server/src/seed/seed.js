@@ -6,7 +6,18 @@ import { User } from '../models/User.js';
 import { Clause } from '../models/Clause.js';
 import { Fact } from '../models/Fact.js';
 import { Term } from '../models/Term.js';
-import { WORKSPACE, DEMO_PASSWORD, DEMO_USERS, CLAUSES, FACTS, TERMS } from './brandData.js';
+import { Draft } from '../models/Draft.js';
+import { DraftVersion } from '../models/DraftVersion.js';
+import { Finding } from '../models/Finding.js';
+import {
+  WORKSPACE,
+  DEMO_PASSWORD,
+  DEMO_USERS,
+  CLAUSES,
+  FACTS,
+  TERMS,
+  SAMPLE_DRAFTS,
+} from './brandData.js';
 
 // Create the workspace and the 3 demo users if missing (upsert: never duplicates).
 // Passwords are reset to the demo password on every run.
@@ -28,13 +39,51 @@ export async function ensureWorkspaceAndUsers() {
   return workspace;
 }
 
-// Wipe this workspace's data and load the FreshNest knowledge base again.
-// Also used by POST /api/demo/reset. Users are NOT touched.
-// Phase 3 and later: add Draft, DraftVersion, Finding, Comment, Review and
-// AuditLog to the wipe below.
+// Versions and findings only carry a draftId, so find the workspace's drafts first.
+async function wipeDrafts(workspaceId) {
+  const ids = (await Draft.find({ workspaceId }).select('_id').lean()).map((d) => d._id);
+  await Promise.all([
+    Finding.deleteMany({ draftId: { $in: ids } }),
+    DraftVersion.deleteMany({ draftId: { $in: ids } }),
+  ]);
+  await Draft.deleteMany({ workspaceId });
+}
+
+// The 4 sample drafts, owned by the demo creator, each with version 1.
+async function createSampleDrafts(workspaceId) {
+  const creatorEmail = DEMO_USERS.find((u) => u.role === 'creator').email;
+  const creator = await User.findOne({ workspaceId, email: creatorEmail });
+  if (!creator) return 0;
+
+  // Created in reverse so "Summer launch post" is the newest and tops the list
+  // (the draft list is sorted by last activity).
+  for (const sample of [...SAMPLE_DRAFTS].reverse()) {
+    const draft = await Draft.create({
+      workspaceId,
+      title: sample.title,
+      contentType: sample.contentType,
+      createdBy: creator._id,
+      status: 'draft',
+      currentVersion: 1,
+    });
+    await DraftVersion.create({
+      draftId: draft._id,
+      version: 1,
+      text: sample.text,
+      createdBy: creator._id,
+      note: 'Initial version',
+    });
+  }
+  return SAMPLE_DRAFTS.length;
+}
+
+// Wipe this workspace's data and load the FreshNest knowledge base and sample
+// drafts again. Also used by POST /api/demo/reset. Users are NOT touched.
+// Phase 6 and later: add Comment, Review and AuditLog to the wipe below.
 export async function reseedWorkspace(workspace) {
   const workspaceId = workspace._id;
 
+  await wipeDrafts(workspaceId);
   await Promise.all([
     Clause.deleteMany({ workspaceId }),
     Fact.deleteMany({ workspaceId }),
@@ -48,7 +97,8 @@ export async function reseedWorkspace(workspace) {
     Fact.insertMany(withWorkspace(FACTS)),
     Term.insertMany(withWorkspace(TERMS)),
   ]);
-  return { clauses: clauses.length, facts: facts.length, terms: terms.length };
+  const drafts = await createSampleDrafts(workspaceId);
+  return { clauses: clauses.length, facts: facts.length, terms: terms.length, drafts };
 }
 
 async function runCli() {
@@ -64,7 +114,9 @@ async function runCli() {
   const counts = await reseedWorkspace(workspace);
 
   console.log(`Workspace "${workspace.name}" reset and reseeded:`);
-  console.log(`  ${DEMO_USERS.length} demo users, ${counts.clauses} clauses, ${counts.facts} facts, ${counts.terms} terms`);
+  console.log(
+    `  ${DEMO_USERS.length} demo users, ${counts.clauses} clauses, ${counts.facts} facts, ${counts.terms} terms, ${counts.drafts} sample drafts`
+  );
   console.log(`Demo password: ${DEMO_PASSWORD}`);
   await mongoose.disconnect();
 }
