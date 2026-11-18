@@ -9,12 +9,17 @@ import { DraftVersion } from '../models/DraftVersion.js';
 import { Finding } from '../models/Finding.js';
 import { Workspace } from '../models/Workspace.js';
 import { runReview } from '../services/reviewPipeline.js';
+import { applyFixes } from '../services/applyFixes.js';
 
 const router = Router();
 router.use(auth);
 
 const REVIEWER_STATUSES = ['submitted', 'approved', 'changes_requested'];
 const REVIEWABLE_STATUSES = ['draft', 'checked']; // see the review route below
+// A draft can get a new version while it is being worked on. Submitted drafts wait
+// for the reviewer, approved drafts are locked (SRS 6).
+const EDITABLE_STATUSES = ['draft', 'checked', 'changes_requested'];
+const MAX_TEXT = 10000; // SRS 7.3
 const reviewsRunning = new Set(); // draft ids with a review in progress
 
 // SRS 7.3 visibility: creators see their own drafts, reviewers see drafts that
@@ -142,6 +147,152 @@ router.post('/:id/review', requireRole('creator', 'admin'), async (req, res, nex
     next(err);
   } finally {
     if (lockKey) reviewsRunning.delete(lockKey);
+  }
+});
+
+// Shared by "save new version" and "apply accepted fixes". Answers 409 itself and
+// returns false when the draft may not be edited right now.
+function ensureEditable(draft, res) {
+  if (draft.status === 'approved') {
+    res.status(409).json({ message: 'This draft is approved and read-only. It can no longer be edited.' });
+    return false;
+  }
+  if (!EDITABLE_STATUSES.includes(draft.status)) {
+    res.status(409).json({ message: 'This draft is waiting for a reviewer and cannot be edited right now.' });
+    return false;
+  }
+  // A running review would write findings and a status for the version it started on.
+  if (reviewsRunning.has(String(draft._id))) {
+    res.status(409).json({ message: 'A review is running for this draft. Try again in a moment.' });
+    return false;
+  }
+  return true;
+}
+
+// Creates version n+1 and makes it current, with status back to "draft" (SRS 6).
+// Returns the new version number, or null if someone else changed the draft in the
+// meantime (the unique index on (draftId, version) and the currentVersion check on
+// the update both catch that), so two saves can never produce the same version.
+async function saveNewVersion({ draft, text, note, userId }) {
+  const next = draft.currentVersion + 1;
+  try {
+    await DraftVersion.create({ draftId: draft._id, version: next, text, createdBy: userId, note });
+  } catch (err) {
+    if (err?.code === 11000) return null;
+    throw err;
+  }
+  const result = await Draft.updateOne(
+    { _id: draft._id, currentVersion: draft.currentVersion },
+    { $set: { currentVersion: next, status: 'draft' } }
+  );
+  if (result.modifiedCount !== 1) {
+    await DraftVersion.deleteOne({ draftId: draft._id, version: next });
+    return null;
+  }
+  return next;
+}
+
+const CHANGED_MESSAGE = 'This draft was changed in another tab. Reload the page and try again.';
+
+const textSchema = z.object({
+  text: z
+    .string()
+    .max(MAX_TEXT)
+    .refine((t) => t.trim().length > 0, 'text must not be empty')
+    .transform((t) => t.replace(/\r\n?/g, '\n')),
+  note: z.string().trim().max(200).optional(),
+});
+
+// PUT /api/drafts/:id/text {text, note} -> new version, status back to "draft" (SRS 7.3)
+router.put('/:id/text', requireRole('creator', 'admin'), validate(textSchema), async (req, res, next) => {
+  try {
+    const draft = await loadVisibleDraft(req, res);
+    if (!draft) return;
+    if (!ensureEditable(draft, res)) return;
+
+    const current = await DraftVersion.findOne({ draftId: draft._id, version: draft.currentVersion });
+    if (current && current.text === req.body.text) {
+      return res.status(400).json({ message: 'The text has not changed, so there is nothing to save' });
+    }
+
+    const version = await saveNewVersion({
+      draft,
+      text: req.body.text,
+      note: req.body.note || 'Edited by hand',
+      userId: req.user._id,
+    });
+    if (version === null) return res.status(409).json({ message: CHANGED_MESSAGE });
+
+    res.json({ draft: await Draft.findById(draft._id), version, text: req.body.text });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /api/drafts/:id/versions/:n -> an older (or the current) version, read-only (SRS 7.3)
+// Includes the findings that were made on that version, so the page can show them.
+router.get('/:id/versions/:n', async (req, res, next) => {
+  try {
+    const draft = await loadVisibleDraft(req, res);
+    if (!draft) return;
+
+    const n = Number(req.params.n);
+    if (!Number.isInteger(n) || n < 1 || n > draft.currentVersion) {
+      return res.status(404).json({ message: 'Version not found' });
+    }
+    const [version, findings] = await Promise.all([
+      DraftVersion.findOne({ draftId: draft._id, version: n }),
+      Finding.find({ draftId: draft._id, version: n }).sort({ start: 1, _id: 1 }),
+    ]);
+    if (!version) return res.status(404).json({ message: 'Version not found' });
+
+    res.json({ draft, version, text: version.text, findings });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/drafts/:id/apply-accepted -> new version with the accepted/edited fixes (SRS 7.5)
+router.post('/:id/apply-accepted', requireRole('creator', 'admin'), async (req, res, next) => {
+  try {
+    const draft = await loadVisibleDraft(req, res);
+    if (!draft) return;
+    if (!ensureEditable(draft, res)) return;
+
+    const [current, findings] = await Promise.all([
+      DraftVersion.findOne({ draftId: draft._id, version: draft.currentVersion }),
+      Finding.find({ draftId: draft._id, version: draft.currentVersion }).lean(),
+    ]);
+    if (!current) return res.status(500).json({ message: 'Current version not found' });
+
+    const result = applyFixes(current.text, findings);
+    if (result.applied === 0) {
+      return res.status(400).json({ message: 'There are no accepted or edited findings to apply' });
+    }
+    if (result.text.trim().length === 0) {
+      return res.status(400).json({ message: 'Applying these fixes would leave the draft empty' });
+    }
+    if (result.text.length > MAX_TEXT) {
+      return res.status(400).json({ message: `Applying these fixes would make the draft longer than ${MAX_TEXT} characters` });
+    }
+
+    const version = await saveNewVersion({
+      draft,
+      text: result.text,
+      note: `Applied ${result.applied} fixes`, // SRS 7.5 wording
+      userId: req.user._id,
+    });
+    if (version === null) return res.status(409).json({ message: CHANGED_MESSAGE });
+
+    res.json({
+      draft: await Draft.findById(draft._id),
+      version,
+      text: result.text,
+      applied: result.applied,
+      skipped: result.skipped,
+    });
+  } catch (err) {
+    next(err);
   }
 });
 
