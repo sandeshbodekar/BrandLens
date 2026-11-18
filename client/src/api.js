@@ -4,6 +4,10 @@
 const BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
 const TOKEN_KEY = 'brandlens_token';
 
+// A review can take ~20 s with AI, and a free Render server needs up to a minute to
+// wake up after being idle. Longer than this, the request is given up with a clear message.
+const TIMEOUT_MS = 60000;
+
 export function getToken() {
   try {
     return localStorage.getItem(TOKEN_KEY);
@@ -51,8 +55,15 @@ async function request(path, { method = 'GET', body } = {}) {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-  } catch {
+  } catch (err) {
+    if (err?.name === 'TimeoutError') {
+      throw new ApiError(
+        'The server took too long to answer. Free servers sleep when idle, so wait a minute and try again.',
+        0
+      );
+    }
     throw new ApiError('Cannot reach the server. Check your connection and try again.', 0);
   }
 
@@ -70,7 +81,16 @@ async function request(path, { method = 'GET', body } = {}) {
       clearToken();
       if (onUnauthorized) onUnauthorized();
     }
-    throw new ApiError(data?.message || `Request failed (${res.status})`, res.status);
+    // 502/503/504 come from the hosting proxy (an HTML page, not our JSON) while the
+    // server is starting up or restarting.
+    const proxyDown = [502, 503, 504].includes(res.status) && !data?.message;
+    throw new ApiError(
+      data?.message ||
+        (proxyDown
+          ? 'The server is starting up or unavailable. Wait a minute and try again.'
+          : `Request failed (${res.status})`),
+      res.status
+    );
   }
   return data;
 }

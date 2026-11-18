@@ -72,8 +72,10 @@ export function AuthProvider({ children }) {
     [startSession]
   );
 
+  // setWorkspace is exposed so the admin settings panel can show a new aiEnabled value
+  // right after PATCH /api/workspace or a demo reset, without a page reload.
   const value = useMemo(
-    () => ({ user, workspace, loading, login, demoLogin, logout }),
+    () => ({ user, workspace, loading, login, demoLogin, logout, setWorkspace }),
     [user, workspace, loading, login, demoLogin, logout]
   );
 

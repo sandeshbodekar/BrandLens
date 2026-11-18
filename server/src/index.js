@@ -2,6 +2,17 @@ import mongoose from 'mongoose';
 import app from './app.js';
 import { config } from './config.js';
 
+// SRS 10: no unhandled promise rejections. Route handlers catch their own errors, so
+// this is a safety net: log the message only (never the whole object, it can hold secrets).
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason instanceof Error ? reason.message : reason);
+});
+// After an uncaught exception the process state is unknown: exit, so Render restarts it.
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err.message);
+  process.exit(1);
+});
+
 async function start() {
   if (!config.mongoUri) {
     console.error('MONGODB_URI is not set. Copy .env.example to .env and fill it in.');

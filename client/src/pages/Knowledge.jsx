@@ -3,6 +3,7 @@ import { Loader2 } from 'lucide-react';
 import { api } from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import ResourceTab from '../components/ResourceTab.jsx';
+import WorkspaceSettings from '../components/WorkspaceSettings.jsx';
 import { RESOURCES } from '../knowledgeConfig.jsx';
 
 // SRS 9: three tabs (Clauses, Facts, Terms). Everyone can read; only admin can write.
@@ -14,7 +15,7 @@ export default function Knowledge() {
   const [data, setData] = useState({ clauses: [], facts: [], terms: [] });
   const [status, setStatus] = useState('loading'); // 'loading' | 'ready' | 'error'
   const [error, setError] = useState('');
-  const [attempt, setAttempt] = useState(0); // bump to retry
+  const [attempt, setAttempt] = useState(0); // bump to retry (also used after a demo reset)
 
   useEffect(() => {
     let cancelled = false;
@@ -49,6 +50,8 @@ export default function Knowledge() {
           ? 'You are an admin: you can add, edit and delete items.'
           : 'Read-only access: only admins can change the knowledge base.'}
       </p>
+
+      {canWrite && <WorkspaceSettings onReset={() => setAttempt((n) => n + 1)} />}
 
       {status === 'loading' && (
         <div className="mt-8 flex items-center gap-2 text-slate-600" role="status">
