@@ -8,6 +8,7 @@ import clauseRoutes from './routes/clauses.js';
 import factRoutes from './routes/facts.js';
 import termRoutes from './routes/terms.js';
 import demoRoutes from './routes/demo.js';
+import draftRoutes from './routes/drafts.js';
 
 const app = express();
 
@@ -30,6 +31,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/clauses', clauseRoutes);
 app.use('/api/facts', factRoutes);
 app.use('/api/terms', termRoutes);
+
+// SRS 7.3, 7.4
+app.use('/api/drafts', draftRoutes);
 
 // SRS 7.7
 app.use('/api/demo', demoRoutes);
