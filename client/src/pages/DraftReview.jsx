@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Loader2, Play, ArrowLeft, ShieldCheck, WifiOff, Wand2, PencilLine, Lock, History, Eye } from 'lucide-react';
+import { Loader2, Play, ArrowLeft, ShieldCheck, WifiOff, Wand2, PencilLine, Lock, History, Eye, Send, MessageSquare, MessageSquareWarning } from 'lucide-react';
 import { api } from '../api.js';
 import StatusPill from '../components/StatusPill.jsx';
 import DisclosureBanner from '../components/DisclosureBanner.jsx';
 import HighlightedText from '../components/HighlightedText.jsx';
 import FindingCard from '../components/FindingCard.jsx';
 import VersionList from '../components/VersionList.jsx';
+import CommentList from '../components/CommentList.jsx';
+import AuditTrail from '../components/AuditTrail.jsx';
+import ReviewDecisionPanel from '../components/ReviewDecisionPanel.jsx';
 
 const MAX_TEXT = 10000;
 const REVIEWABLE = ['draft', 'checked']; // same rule as the server (review and decisions)
@@ -25,17 +28,18 @@ function summarise(findings) {
 
 export default function DraftReview() {
   const { id } = useParams();
-  const [data, setData] = useState(null); // { draft, text, findings, versions } for the CURRENT version
+  const [data, setData] = useState(null); // { draft, text, findings, comments, versions, reviews } for the CURRENT version
   const [me, setMe] = useState(null); // { user, workspace }
   const [sources, setSources] = useState({}); // code -> { title, text }
   const [loadError, setLoadError] = useState('');
   const [running, setRunning] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
   const [mode, setMode] = useState(null); // mode of the last review run in this session
   const [selectedId, setSelectedId] = useState(null);
-  const [tab, setTab] = useState('findings'); // 'findings' | 'history'
+  const [tab, setTab] = useState('findings'); // 'findings' | 'comments' | 'history'
 
   // Older versions: null means "the current version".
   const [viewVersion, setViewVersion] = useState(null);
@@ -165,6 +169,37 @@ export default function DraftReview() {
     }
   }
 
+  // Creator: "checked" -> "submitted". The server re-checks every rule.
+  async function submitForApproval() {
+    setSubmitting(true);
+    setActionError('');
+    setNotice('');
+    try {
+      await api.post(`/api/drafts/${id}/submit`);
+      setSelectedId(null);
+      setViewVersion(null);
+      await load();
+      setNotice('Submitted for approval. A reviewer will look at it next.');
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  // Called by ReviewDecisionPanel after the server accepted the decision.
+  async function onDecided(decision) {
+    setViewVersion(null);
+    await load();
+    setNotice(decision === 'approved' ? 'Approved. The draft is now read-only.' : 'Changes requested. The creator can see your note.');
+  }
+
+  // Passed to CommentList. Throws on failure so the form can show the error.
+  async function addComment(text) {
+    const comment = await api.post(`/api/drafts/${id}/comments`, { text });
+    setData((d) => ({ ...d, comments: [...d.comments, comment] }));
+  }
+
   function select(findingId) {
     setSelectedId(findingId);
     setTab('findings');
@@ -198,6 +233,8 @@ export default function DraftReview() {
   }
 
   const { draft, versions } = data;
+  const comments = data.comments || [];
+  const reviews = data.reviews || [];
   const role = me.user.role;
   const isAuthor = role === 'creator' || role === 'admin';
   const rulesOnlyWorkspace = me.workspace?.aiEnabled === false;
@@ -205,9 +242,15 @@ export default function DraftReview() {
   const canEdit = isAuthor && EDITABLE.includes(draft.status) && !viewingOld;
   const canDecide = canReview; // same statuses, current version, not while editing
   const acceptedCount = data.findings.filter((f) => f.decision === 'accepted' || f.decision === 'edited').length;
+  const pendingHigh = data.findings.filter((f) => f.severity === 'high' && f.decision === 'pending').length;
+  // SRS 7.6: only a creator submits. The server also needs status "checked" (reviewed version).
+  const canSubmit = role === 'creator' && draft.status === 'checked' && !viewingOld && !editing;
+  const canDecideReview = (role === 'reviewer' || role === 'admin') && draft.status === 'submitted' && !viewingOld;
+  const lastChangeRequest = [...reviews].reverse().find((r) => r.decision === 'changes_requested');
+  const lastApproval = [...reviews].reverse().find((r) => r.decision === 'approved');
   const aiUnavailable = mode === 'rules-only' && !rulesOnlyWorkspace; // AI was expected but the run fell back
   const backTo = role === 'reviewer' ? '/queue' : '/drafts';
-  const busy = running || applying || saving;
+  const busy = running || applying || saving || submitting;
   const unchanged = editText === data.text;
   const tooLong = editText.length > MAX_TEXT;
 
@@ -280,6 +323,18 @@ export default function DraftReview() {
               {running ? 'Reviewing…' : 'Run review'}
             </button>
           )}
+          {canSubmit && (
+            <button
+              type="button"
+              onClick={submitForApproval}
+              disabled={busy || pendingHigh > 0}
+              title={pendingHigh > 0 ? 'Accept, edit or dismiss every high severity finding first' : undefined}
+              className={`${primaryBtn} bg-violet-700 text-white hover:bg-violet-600`}
+            >
+              {submitting ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Send size={16} aria-hidden="true" />}
+              {submitting ? 'Submitting…' : 'Submit for approval'}
+            </button>
+          )}
         </div>
       </header>
 
@@ -288,14 +343,32 @@ export default function DraftReview() {
         {draft.status === 'approved' && (
           <div role="status" className="flex items-start gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
             <Lock size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
-            This draft is approved and read-only. It can no longer be edited.
+            <span>
+              This draft is approved and read-only. It can no longer be edited.
+              {lastApproval?.note && <> Reviewer note: {lastApproval.note}</>}
+            </span>
           </div>
         )}
-        {draft.status === 'submitted' && isAuthor && (
+        {draft.status === 'changes_requested' && (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            <MessageSquareWarning size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>
+              {lastChangeRequest?.reviewerId?.name ? `${lastChangeRequest.reviewerId.name} asked for changes` : 'A reviewer asked for changes'}
+              {lastChangeRequest?.note ? `: ${lastChangeRequest.note}` : '.'}
+              {isAuthor && ' Edit the text, run the review again and resubmit.'}
+            </span>
+          </div>
+        )}
+        {draft.status === 'submitted' && role === 'creator' && (
           <div role="status" className="flex items-start gap-2 rounded-lg border border-violet-300 bg-violet-50 px-4 py-3 text-sm text-violet-950">
             <Lock size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
             This draft is waiting for a reviewer, so it cannot be edited right now.
           </div>
+        )}
+        {canSubmit && pendingHigh > 0 && (
+          <p role="status" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+            {pendingHigh} high severity {pendingHigh === 1 ? 'finding is' : 'findings are'} still pending. Accept, edit or dismiss (with a reason) each one before you submit.
+          </p>
         )}
         {viewingOld && (
           <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-300 bg-slate-100 px-4 py-3 text-sm text-slate-900">
@@ -318,6 +391,7 @@ export default function DraftReview() {
         {actionError && (
           <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">{actionError}</p>
         )}
+        {canDecideReview && <ReviewDecisionPanel draftId={id} onDone={onDecided} />}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm text-white" aria-live="polite">
@@ -372,10 +446,13 @@ export default function DraftReview() {
           )}
         </section>
 
-        <section aria-label="Findings and history">
-          <div className="mb-3 flex items-center gap-1" role="tablist">
+        <section aria-label="Findings, comments and history">
+          <div className="mb-3 flex flex-wrap items-center gap-1" role="tablist">
             <button type="button" role="tab" aria-selected={tab === 'findings'} onClick={() => setTab('findings')} className={tabBtn(tab === 'findings')}>
               Findings ({shownFindings.length})
+            </button>
+            <button type="button" role="tab" aria-selected={tab === 'comments'} onClick={() => setTab('comments')} className={tabBtn(tab === 'comments')}>
+              <span className="inline-flex items-center gap-1"><MessageSquare size={14} aria-hidden="true" /> Comments ({comments.length})</span>
             </button>
             <button type="button" role="tab" aria-selected={tab === 'history'} onClick={() => setTab('history')} className={tabBtn(tab === 'history')}>
               <span className="inline-flex items-center gap-1"><History size={14} aria-hidden="true" /> History ({versions.length})</span>
@@ -383,7 +460,12 @@ export default function DraftReview() {
           </div>
 
           {tab === 'history' ? (
-            <VersionList versions={versions} currentVersion={currentVersion} viewing={viewVersion ?? currentVersion} onView={viewOf} />
+            <>
+              <VersionList versions={versions} currentVersion={currentVersion} viewing={viewVersion ?? currentVersion} onView={viewOf} />
+              <AuditTrail draftId={id} refreshKey={draft.updatedAt} />
+            </>
+          ) : tab === 'comments' ? (
+            <CommentList comments={comments} onAdd={addComment} />
           ) : (
             <>
               {running && sorted.length === 0 && (
