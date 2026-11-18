@@ -1,30 +1,52 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Loader2, Play, ArrowLeft, ShieldCheck, WifiOff } from 'lucide-react';
+import { Loader2, Play, ArrowLeft, ShieldCheck, WifiOff, Wand2, PencilLine, Lock, History, Eye } from 'lucide-react';
 import { api } from '../api.js';
 import StatusPill from '../components/StatusPill.jsx';
 import DisclosureBanner from '../components/DisclosureBanner.jsx';
 import HighlightedText from '../components/HighlightedText.jsx';
 import FindingCard from '../components/FindingCard.jsx';
+import VersionList from '../components/VersionList.jsx';
+
+const MAX_TEXT = 10000;
+const REVIEWABLE = ['draft', 'checked']; // same rule as the server (review and decisions)
+const EDITABLE = ['draft', 'checked', 'changes_requested']; // new versions (edit, apply fixes)
 
 // Summary bar text, e.g. "5 findings: 3 high, 1 medium, 1 low. 2 pending."
 function summarise(findings) {
   if (findings.length === 0) return 'No findings.';
   const n = (k, v) => findings.filter((f) => f[k] === v).length;
   const word = findings.length === 1 ? 'finding' : 'findings';
-  return `${findings.length} ${word}: ${n('severity', 'high')} high, ${n('severity', 'medium')} medium, ${n('severity', 'low')} low. ${n('decision', 'pending')} pending.`;
+  let text = `${findings.length} ${word}: ${n('severity', 'high')} high, ${n('severity', 'medium')} medium, ${n('severity', 'low')} low. ${n('decision', 'pending')} pending.`;
+  const [a, e, d] = [n('decision', 'accepted'), n('decision', 'edited'), n('decision', 'dismissed')];
+  if (a + e + d > 0) text += ` ${a} accepted, ${e} edited, ${d} dismissed.`;
+  return text;
 }
 
 export default function DraftReview() {
   const { id } = useParams();
-  const [data, setData] = useState(null); // { draft, text, findings, versions }
+  const [data, setData] = useState(null); // { draft, text, findings, versions } for the CURRENT version
   const [me, setMe] = useState(null); // { user, workspace }
   const [sources, setSources] = useState({}); // code -> { title, text }
   const [loadError, setLoadError] = useState('');
   const [running, setRunning] = useState(false);
-  const [runError, setRunError] = useState('');
-  const [mode, setMode] = useState(null); // mode from the last review run in this session
+  const [applying, setApplying] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [notice, setNotice] = useState('');
+  const [mode, setMode] = useState(null); // mode of the last review run in this session
   const [selectedId, setSelectedId] = useState(null);
+  const [tab, setTab] = useState('findings'); // 'findings' | 'history'
+
+  // Older versions: null means "the current version".
+  const [viewVersion, setViewVersion] = useState(null);
+  const [oldData, setOldData] = useState(null); // { text, findings } of viewVersion
+  const [oldError, setOldError] = useState('');
+
+  // Editing the text by hand ("Save new version").
+  const [editing, setEditing] = useState(false);
+  const [editText, setEditText] = useState('');
+  const [saving, setSaving] = useState(false);
+
   const cardRefs = useRef({});
 
   const load = useCallback(async () => {
@@ -40,6 +62,9 @@ export default function DraftReview() {
 
   useEffect(() => {
     setData(null);
+    setViewVersion(null);
+    setEditing(false);
+    setNotice('');
     load();
   }, [load]);
 
@@ -55,34 +80,108 @@ export default function DraftReview() {
       .catch(() => {});
   }, []);
 
+  const currentVersion = data?.draft.currentVersion;
+  const viewingOld = viewVersion !== null && viewVersion !== currentVersion;
+
+  // Load an older version (read-only) when one is picked.
+  useEffect(() => {
+    setOldData(null);
+    setOldError('');
+    if (!viewingOld) return undefined;
+    let cancelled = false;
+    api
+      .get(`/api/drafts/${id}/versions/${viewVersion}`)
+      .then((res) => !cancelled && setOldData({ text: res.text, findings: res.findings }))
+      .catch((err) => !cancelled && setOldError(err.message));
+    return () => {
+      cancelled = true;
+    };
+  }, [id, viewVersion, viewingOld]);
+
+  const shownText = viewingOld ? oldData?.text ?? '' : data?.text ?? '';
+  const shownFindings = viewingOld ? oldData?.findings ?? [] : data?.findings ?? [];
+  const sorted = useMemo(
+    () => [...shownFindings].sort((a, b) => a.start - b.start || a.end - b.end),
+    [shownFindings]
+  );
+
   async function runReview() {
     setRunning(true);
-    setRunError('');
+    setActionError('');
+    setNotice('');
     try {
       const result = await api.post(`/api/drafts/${id}/review`);
       setMode(result.mode);
       setSelectedId(null);
+      setViewVersion(null);
       await load(); // reload so the page shows the saved findings and the new status
     } catch (err) {
-      setRunError(err.message);
+      setActionError(err.message);
     } finally {
       setRunning(false);
     }
   }
 
+  // Passed to every FindingCard. Errors are thrown so the card can show them.
+  async function decide(findingId, payload) {
+    const updated = await api.patch(`/api/findings/${findingId}`, payload);
+    setNotice('');
+    setData((d) => ({ ...d, findings: d.findings.map((f) => (f._id === updated._id ? updated : f)) }));
+  }
+
+  async function applyFixes() {
+    setApplying(true);
+    setActionError('');
+    setNotice('');
+    try {
+      const result = await api.post(`/api/drafts/${id}/apply-accepted`);
+      setSelectedId(null);
+      setViewVersion(null);
+      await load();
+      const skipped = result.skipped ? ` ${result.skipped} could not be applied.` : '';
+      setNotice(`Applied ${result.applied} ${result.applied === 1 ? 'fix' : 'fixes'}. Version ${result.version} is now current. Run review to check it.${skipped}`);
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setApplying(false);
+    }
+  }
+
+  async function saveEdit() {
+    setSaving(true);
+    setActionError('');
+    setNotice('');
+    try {
+      const result = await api.put(`/api/drafts/${id}/text`, { text: editText });
+      setEditing(false);
+      setSelectedId(null);
+      setViewVersion(null);
+      await load();
+      setNotice(`Saved as version ${result.version}. Run review to check it.`);
+    } catch (err) {
+      setActionError(err.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   function select(findingId) {
     setSelectedId(findingId);
+    setTab('findings');
     // Highlight click scrolls to the card; card click scrolls to the highlight.
     document.getElementById(`card-${findingId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     document.getElementById(`hl-${findingId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
-  const findings = data?.findings ?? [];
-  const sorted = useMemo(() => [...findings].sort((a, b) => a.start - b.start || a.end - b.end), [findings]);
+  function viewOf(n) {
+    setViewVersion(n === currentVersion ? null : n);
+    setEditing(false);
+    setSelectedId(null);
+  }
 
   if (loadError) {
     return (
-      <div className="mx-auto max-w-3xl px-4 py-8">
+      <div>
         <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
           Could not load this draft: {loadError}
         </p>
@@ -92,22 +191,38 @@ export default function DraftReview() {
   }
   if (!data || !me) {
     return (
-      <p className="flex items-center gap-2 px-4 py-8 text-sm text-slate-600">
+      <p className="flex items-center gap-2 py-8 text-sm text-slate-600">
         <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Loading draft…
       </p>
     );
   }
 
-  const { draft, text } = data;
+  const { draft, versions } = data;
   const role = me.user.role;
+  const isAuthor = role === 'creator' || role === 'admin';
   const rulesOnlyWorkspace = me.workspace?.aiEnabled === false;
-  const canReview = (role === 'creator' || role === 'admin') && ['draft', 'checked'].includes(draft.status);
-  // AI was expected (workspace has it on) but the last run fell back to rules only.
-  const aiUnavailable = mode === 'rules-only' && !rulesOnlyWorkspace;
+  const canReview = isAuthor && REVIEWABLE.includes(draft.status) && !viewingOld && !editing;
+  const canEdit = isAuthor && EDITABLE.includes(draft.status) && !viewingOld;
+  const canDecide = canReview; // same statuses, current version, not while editing
+  const acceptedCount = data.findings.filter((f) => f.decision === 'accepted' || f.decision === 'edited').length;
+  const aiUnavailable = mode === 'rules-only' && !rulesOnlyWorkspace; // AI was expected but the run fell back
   const backTo = role === 'reviewer' ? '/queue' : '/drafts';
+  const busy = running || applying || saving;
+  const unchanged = editText === data.text;
+  const tooLong = editText.length > MAX_TEXT;
+
+  let summary;
+  if (viewingOld) summary = shownFindings.length ? summarise(shownFindings) : 'No findings were recorded for this version.';
+  else if (shownFindings.length === 0 && draft.status === 'draft') summary = 'Not reviewed yet. Run review to check this version.';
+  else summary = summarise(shownFindings);
+
+  const primaryBtn =
+    'inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-slate-900';
+  const tabBtn = (active) =>
+    `rounded-md px-3 py-1.5 text-sm font-medium focus:outline focus:outline-2 focus:outline-slate-900 ${active ? 'bg-slate-900 text-white' : 'text-slate-700 hover:bg-slate-100'}`;
 
   return (
-    <div className="mx-auto max-w-7xl px-4 py-6">
+    <div>
       <Link to={backTo} className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900">
         <ArrowLeft size={14} aria-hidden="true" /> Back
       </Link>
@@ -115,15 +230,52 @@ export default function DraftReview() {
       <header className="mt-2 flex flex-wrap items-center gap-3">
         <h1 className="text-2xl font-semibold text-slate-900">{draft.title}</h1>
         <StatusPill status={draft.status} />
-        <span className="text-sm text-slate-500">Version {draft.currentVersion}</span>
-        <div className="ml-auto">
-          {canReview && (
+        <div className="flex items-center gap-2">
+          <label htmlFor="version" className="text-sm text-slate-600">Version</label>
+          <select
+            id="version"
+            value={viewVersion ?? currentVersion}
+            onChange={(e) => viewOf(Number(e.target.value))}
+            disabled={busy}
+            className="rounded-md border border-slate-300 bg-white px-2 py-1.5 text-sm focus:outline focus:outline-2 focus:outline-slate-900"
+          >
+            {[...versions].sort((a, b) => b.version - a.version).map((v) => (
+              <option key={v.version} value={v.version}>
+                {v.version}{v.version === currentVersion ? ' (current)' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {canEdit && !editing && (
             <button
               type="button"
-              onClick={runReview}
-              disabled={running}
-              className="inline-flex items-center gap-2 rounded-md bg-teal-800 px-4 py-2 text-sm font-medium text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60 focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-teal-900"
+              onClick={() => {
+                setEditText(data.text);
+                setEditing(true);
+                setActionError('');
+              }}
+              disabled={busy}
+              className={`${primaryBtn} border border-slate-300 bg-white text-slate-800 hover:bg-slate-50`}
             >
+              <PencilLine size={16} aria-hidden="true" /> Edit text
+            </button>
+          )}
+          {canEdit && !editing && (
+            <button
+              type="button"
+              onClick={applyFixes}
+              disabled={busy || acceptedCount === 0}
+              title={acceptedCount === 0 ? 'Accept or edit at least one finding first' : undefined}
+              className={`${primaryBtn} bg-emerald-700 text-white hover:bg-emerald-600`}
+            >
+              {applying ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Wand2 size={16} aria-hidden="true" />}
+              {applying ? 'Applying…' : `Apply accepted fixes${acceptedCount ? ` (${acceptedCount})` : ''}`}
+            </button>
+          )}
+          {canReview && (
+            <button type="button" onClick={runReview} disabled={busy} className={`${primaryBtn} bg-teal-800 text-white hover:bg-teal-700`}>
               {running ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
               {running ? 'Reviewing…' : 'Run review'}
             </button>
@@ -133,57 +285,140 @@ export default function DraftReview() {
 
       <div className="mt-4 space-y-3">
         <DisclosureBanner rulesOnly={rulesOnlyWorkspace} />
+        {draft.status === 'approved' && (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
+            <Lock size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            This draft is approved and read-only. It can no longer be edited.
+          </div>
+        )}
+        {draft.status === 'submitted' && isAuthor && (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-violet-300 bg-violet-50 px-4 py-3 text-sm text-violet-950">
+            <Lock size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            This draft is waiting for a reviewer, so it cannot be edited right now.
+          </div>
+        )}
+        {viewingOld && (
+          <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-300 bg-slate-100 px-4 py-3 text-sm text-slate-900">
+            <Eye size={18} className="shrink-0" aria-hidden="true" />
+            You are viewing version {viewVersion}. It is read-only.
+            <button type="button" onClick={() => setViewVersion(null)} className="font-medium underline focus:outline focus:outline-2 focus:outline-slate-900">
+              Back to version {currentVersion}
+            </button>
+          </div>
+        )}
         {aiUnavailable && (
           <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             <WifiOff size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
             AI review was unavailable, so this result uses the rule checks only. Try running the review again.
           </div>
         )}
-        {runError && (
-          <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">{runError}</p>
+        {notice && (
+          <p role="status" className="rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">{notice}</p>
+        )}
+        {actionError && (
+          <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">{actionError}</p>
         )}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm text-white" aria-live="polite">
         <ShieldCheck size={16} aria-hidden="true" />
-        {draft.status === 'draft' && findings.length === 0 ? 'Not reviewed yet. Run review to check this version.' : summarise(findings)}
+        {summary}
       </div>
 
       <div className="mt-4 grid gap-6 lg:grid-cols-2">
         <section aria-label="Draft text" className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 text-sm font-semibold text-slate-700">Draft text</h2>
-          <HighlightedText text={text} findings={sorted} selectedId={selectedId} onSelect={select} />
+          <h2 className="mb-3 text-sm font-semibold text-slate-700">
+            Draft text{viewingOld ? ` (version ${viewVersion})` : ''}
+          </h2>
+          {editing ? (
+            <div className="space-y-3">
+              <label htmlFor="edit-text" className="sr-only">Edit draft text</label>
+              <textarea
+                id="edit-text"
+                value={editText}
+                onChange={(e) => setEditText(e.target.value)}
+                rows={12}
+                className="w-full rounded-md border border-slate-300 px-3 py-2 text-[15px] leading-7 focus:outline focus:outline-2 focus:outline-slate-900"
+              />
+              <p className={`text-xs ${tooLong ? 'font-semibold text-red-700' : 'text-slate-500'}`} aria-live="polite">
+                {editText.length.toLocaleString()} / {MAX_TEXT.toLocaleString()} characters
+                {tooLong && ' - too long, shorten the text'}
+              </p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={saveEdit}
+                  disabled={saving || unchanged || tooLong || editText.trim().length === 0}
+                  className={`${primaryBtn} bg-slate-900 text-white hover:bg-slate-700`}
+                >
+                  {saving && <Loader2 size={16} className="animate-spin" aria-hidden="true" />}
+                  Save new version
+                </button>
+                <button type="button" onClick={() => setEditing(false)} disabled={saving} className={`${primaryBtn} text-slate-700 underline`}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : viewingOld && !oldData && !oldError ? (
+            <p className="flex items-center gap-2 text-sm text-slate-600">
+              <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Loading version {viewVersion}…
+            </p>
+          ) : oldError ? (
+            <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+              Could not load this version: {oldError}
+            </p>
+          ) : (
+            <HighlightedText text={shownText} findings={sorted} selectedId={selectedId} onSelect={select} />
+          )}
         </section>
 
-        <section aria-label="Findings">
-          <h2 className="mb-3 text-sm font-semibold text-slate-700">Findings</h2>
-          {running && findings.length === 0 && (
-            <p className="flex items-center gap-2 text-sm text-slate-600">
-              <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Checking against guidelines and facts…
-            </p>
-          )}
-          {!running && sorted.length === 0 && (
-            <div className="rounded-lg border border-dashed border-slate-300 px-6 py-10 text-center text-sm text-slate-700">
-              {draft.status === 'draft'
-                ? canReview
-                  ? 'Run review to see issues, with the rule or fact behind each one.'
-                  : 'This draft has not been reviewed yet.'
-                : 'No issues found in this version.'}
-            </div>
-          )}
-          <div className="space-y-3">
-            {sorted.map((f, i) => (
-              <FindingCard
-                key={f._id}
-                ref={(el) => (cardRefs.current[f._id] = el)}
-                finding={f}
-                index={i}
-                selected={f._id === selectedId}
-                onSelect={select}
-                sources={sources}
-              />
-            ))}
+        <section aria-label="Findings and history">
+          <div className="mb-3 flex items-center gap-1" role="tablist">
+            <button type="button" role="tab" aria-selected={tab === 'findings'} onClick={() => setTab('findings')} className={tabBtn(tab === 'findings')}>
+              Findings ({shownFindings.length})
+            </button>
+            <button type="button" role="tab" aria-selected={tab === 'history'} onClick={() => setTab('history')} className={tabBtn(tab === 'history')}>
+              <span className="inline-flex items-center gap-1"><History size={14} aria-hidden="true" /> History ({versions.length})</span>
+            </button>
           </div>
+
+          {tab === 'history' ? (
+            <VersionList versions={versions} currentVersion={currentVersion} viewing={viewVersion ?? currentVersion} onView={viewOf} />
+          ) : (
+            <>
+              {running && sorted.length === 0 && (
+                <p className="flex items-center gap-2 text-sm text-slate-600">
+                  <Loader2 size={16} className="animate-spin" aria-hidden="true" /> Checking against guidelines and facts…
+                </p>
+              )}
+              {!running && !(viewingOld && !oldData && !oldError) && sorted.length === 0 && (
+                <div className="rounded-lg border border-dashed border-slate-300 px-6 py-10 text-center text-sm text-slate-700">
+                  {viewingOld
+                    ? 'No findings were recorded for this version.'
+                    : draft.status === 'draft'
+                      ? canReview
+                        ? 'Run review to see issues, with the rule or fact behind each one.'
+                        : 'This draft has not been reviewed yet.'
+                      : 'No issues found in this version.'}
+                </div>
+              )}
+              <div className="space-y-3">
+                {sorted.map((f, i) => (
+                  <FindingCard
+                    key={f._id}
+                    ref={(el) => (cardRefs.current[f._id] = el)}
+                    finding={f}
+                    index={i}
+                    selected={f._id === selectedId}
+                    onSelect={select}
+                    sources={sources}
+                    canDecide={canDecide && !busy}
+                    onDecide={decide}
+                  />
+                ))}
+              </div>
+            </>
+          )}
         </section>
       </div>
     </div>
