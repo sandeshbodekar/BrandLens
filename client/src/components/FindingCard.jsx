@@ -92,10 +92,11 @@ const FindingCard = forwardRef(function FindingCard({ finding, index, selected, 
     <article
       ref={ref}
       id={`card-${f._id}`}
-      onClick={() => onSelect(f._id)}
-      className={`rounded-lg border bg-white p-4 shadow-sm ${selected ? 'border-slate-900 ring-1 ring-slate-900' : 'border-slate-200'} ${
-        f.decision === 'dismissed' ? 'opacity-80' : ''
-      }`}
+      onClick={() => onSelect(f._id, 'card')}
+      aria-current={selected ? 'true' : undefined}
+      className={`rounded-lg border p-4 ${
+        selected ? 'border-teal-700 border-l-8 bg-teal-50 shadow-lg ring-2 ring-teal-600' : 'border-slate-200 bg-white shadow-sm'
+      } ${f.decision === 'dismissed' && !selected ? 'opacity-80' : ''}`}
     >
       <header className="flex flex-wrap items-center gap-2">
         <span className="text-xs font-bold text-slate-500">#{index + 1}</span>

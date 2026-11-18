@@ -77,7 +77,33 @@ router.get('/', async (req, res, next) => {
 
     const visible = visibleTo(req.user, req.workspaceId);
     const filter = parsed.data ? { $and: [visible, { status: parsed.data }] } : visible;
-    res.json(await Draft.find(filter).sort({ updatedAt: -1 }));
+    const drafts = await Draft.find(filter).sort({ updatedAt: -1 });
+
+    // Finding counts of each draft's CURRENT version, so the list can show which draft
+    // needs attention. One aggregate for the whole page, not one query per draft.
+    const counts = new Map();
+    if (drafts.length) {
+      const rows = await Finding.aggregate([
+        { $match: { $or: drafts.map((d) => ({ draftId: d._id, version: d.currentVersion })) } },
+        {
+          $group: {
+            _id: '$draftId',
+            total: { $sum: 1 },
+            pending: { $sum: { $cond: [{ $eq: ['$decision', 'pending'] }, 1, 0] } },
+            pendingHigh: {
+              $sum: { $cond: [{ $and: [{ $eq: ['$severity', 'high'] }, { $eq: ['$decision', 'pending'] }] }, 1, 0] },
+            },
+          },
+        },
+      ]);
+      for (const r of rows) counts.set(String(r._id), { total: r.total, pending: r.pending, pendingHigh: r.pendingHigh });
+    }
+    res.json(
+      drafts.map((d) => ({
+        ...d.toObject(),
+        findingCounts: counts.get(String(d._id)) || { total: 0, pending: 0, pendingHigh: 0 },
+      }))
+    );
   } catch (err) {
     next(err);
   }
