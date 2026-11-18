@@ -4,6 +4,7 @@ import { api } from '../api.js';
 import { useAuth } from '../context/AuthContext.jsx';
 import ResourceTab from '../components/ResourceTab.jsx';
 import WorkspaceSettings from '../components/WorkspaceSettings.jsx';
+import ClauseImport from '../components/ClauseImport.jsx';
 import { RESOURCES } from '../knowledgeConfig.jsx';
 
 // SRS 9: three tabs (Clauses, Facts, Terms). Everyone can read; only admin can write.
@@ -100,6 +101,8 @@ export default function Knowledge() {
           </div>
 
           <div role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`} className="mt-4">
+            {/* SRS 7.2: paste-import of guidelines (admin, Clauses tab only) */}
+            {tab === 'clauses' && canWrite && <ClauseImport clauses={data.clauses} onSaved={() => reload('clauses')} />}
             {/* key resets the form state when switching tabs */}
             <ResourceTab
               key={tab}

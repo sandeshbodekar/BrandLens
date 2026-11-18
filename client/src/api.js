@@ -37,9 +37,10 @@ export function setOnUnauthorized(fn) {
 }
 
 export class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, details) {
     super(message);
     this.status = status;
+    this.details = details; // [{ path, message }] from zod validation, when the server sent them
   }
 }
 
@@ -89,7 +90,8 @@ async function request(path, { method = 'GET', body } = {}) {
         (proxyDown
           ? 'The server is starting up or unavailable. Wait a minute and try again.'
           : `Request failed (${res.status})`),
-      res.status
+      res.status,
+      data?.errors
     );
   }
   return data;
