@@ -55,13 +55,13 @@ The one-click **Try demo** buttons on the login page use the same three accounts
 ![Draft list with finding counts, status labels and last-updated times](docs/screenshots/02-draft-list.png)
 
 ### 3. Review screen: highlighted text, cited findings, one status panel
-![Review page with highlighted draft text, a selected finding card and the review status panel](docs/screenshots/03-review-findings.png)
+![Review page with highlighted draft text, finding cards with cited sources and a notice that the review was done by rules](docs/screenshots/03-review-findings.png)
 
 ### 4. Knowledge base: clauses, facts and terms
 ![Knowledge base page with clauses, facts and terms tabs](docs/screenshots/04-knowledge-base.png)
 
 ### 5. Version history and audit trail
-![History tab showing versions and the audit trail of an approved draft](docs/screenshots/05-history-and-audit.png)
+![History tab showing the version list and the audit trail of review runs](docs/screenshots/05-history-and-audit.png)
 
 ---
 
@@ -91,7 +91,7 @@ The one-click **Try demo** buttons on the login page use the same three accounts
 - **AI-assisted review uses Google Gemini** (model `gemini-3.8-flash`, set through environment variables). A single adapter file talks to the provider, so the model can be changed without touching the rest of the code.
 - **What is sent:** the draft text plus the organisation's active clauses and valid facts. **Email addresses and 10-digit phone numbers are masked before the text leaves the server.** Other personal data, such as names and street addresses, is **not** masked, so do not paste it into a draft.
 - **Grounded and checked:** the model is instructed to use only the provided clauses and facts. Its answer is untrusted until the verifier has checked every item, as described above.
-- **Safe fallback:** if the AI is switched off, times out, returns an error, a blocked answer or malformed output, the review continues with the deterministic rule findings only. The screen then shows **Rules-only fallback** and the review never fails because of the provider.
+- **Safe fallback:** if the AI is switched off, times out, returns an error, a blocked answer or malformed output, the review continues with the deterministic rule findings only. The screen then shows a notice saying why (for example, the Gemini service was too busy or took too long to answer) and marks the result **Reviewed by rules**. The review never fails because of the provider.
 - **Admin control:** an admin can switch the workspace to **rules-only mode** on the Knowledge page. In that mode no draft text is sent to any AI service.
 - **Model settings:** `gemini-3.8-flash` ignores a `temperature` setting, so the adapter asks for JSON output and a low thinking level instead of the `temperature: 0` mentioned in the specification.
 - The interface shows an AI-use disclosure on every review screen.
@@ -222,7 +222,7 @@ Also built: rate limiting, input validation, a central error handler, an AI on/o
 - When an AI finding overlaps a rule finding, the rule finding stays and the AI explanation is appended only if it cites a different source.
 - The general rate limit is 300 requests per 15 minutes instead of the example 100, because one review page already makes several calls. Failed logins (10), reviews (30 per user) and resets (10 per user) are limited more tightly.
 - A review can run only while a draft is `draft` or `checked`, and a submitted draft cannot be edited until the reviewer decides.
-- The mode of the last review (AI + rules or rules-only) is shown for the current session but is not stored on the server.
+- The mode of the last review (AI + rules or rules-only) and the reason the AI step did not run are saved in the audit row of that review run, so the page still shows them after a refresh.
 - One-click demo logins were added so that judges do not need to sign up.
 
 ### Round 3 plans
