@@ -11,6 +11,7 @@ import { Finding } from '../models/Finding.js';
 import { Comment } from '../models/Comment.js';
 import { Review, REVIEW_DECISIONS } from '../models/Review.js';
 import { Workspace } from '../models/Workspace.js';
+import { AuditLog } from '../models/AuditLog.js';
 import { runReview } from '../services/reviewPipeline.js';
 import { applyFixes } from '../services/applyFixes.js';
 
@@ -77,33 +78,7 @@ router.get('/', async (req, res, next) => {
 
     const visible = visibleTo(req.user, req.workspaceId);
     const filter = parsed.data ? { $and: [visible, { status: parsed.data }] } : visible;
-    const drafts = await Draft.find(filter).sort({ updatedAt: -1 });
-
-    // Finding counts of each draft's CURRENT version, so the list can show which draft
-    // needs attention. One aggregate for the whole page, not one query per draft.
-    const counts = new Map();
-    if (drafts.length) {
-      const rows = await Finding.aggregate([
-        { $match: { $or: drafts.map((d) => ({ draftId: d._id, version: d.currentVersion })) } },
-        {
-          $group: {
-            _id: '$draftId',
-            total: { $sum: 1 },
-            pending: { $sum: { $cond: [{ $eq: ['$decision', 'pending'] }, 1, 0] } },
-            pendingHigh: {
-              $sum: { $cond: [{ $and: [{ $eq: ['$severity', 'high'] }, { $eq: ['$decision', 'pending'] }] }, 1, 0] },
-            },
-          },
-        },
-      ]);
-      for (const r of rows) counts.set(String(r._id), { total: r.total, pending: r.pending, pendingHigh: r.pendingHigh });
-    }
-    res.json(
-      drafts.map((d) => ({
-        ...d.toObject(),
-        findingCounts: counts.get(String(d._id)) || { total: 0, pending: 0, pendingHigh: 0 },
-      }))
-    );
+    res.json(await Draft.find(filter).sort({ updatedAt: -1 }));
   } catch (err) {
     next(err);
   }
@@ -117,12 +92,23 @@ router.get('/:id', async (req, res, next) => {
     const draft = await loadVisibleDraft(req, res);
     if (!draft) return;
 
-    const [current, findings, versions, comments, reviews] = await Promise.all([
+    const [current, findings, versions, comments, reviews, lastRun] = await Promise.all([
       DraftVersion.findOne({ draftId: draft._id, version: draft.currentVersion }),
       Finding.find({ draftId: draft._id, version: draft.currentVersion }).sort({ start: 1, _id: 1 }),
       DraftVersion.find({ draftId: draft._id }, { text: 0 }).sort({ version: 1 }),
       Comment.forDraft(draft._id),
       Review.find({ draftId: draft._id }).sort({ createdAt: 1 }).populate('reviewerId', 'name'),
+      // The newest review run of the CURRENT version, so the page can say after a refresh
+      // how that review was produced (AI + rules, or rules only and why).
+      AuditLog.findOne({
+        workspaceId: req.workspaceId,
+        entity: 'Draft',
+        entityId: draft._id,
+        action: 'review_run',
+        'meta.version': draft.currentVersion,
+      })
+        .sort({ createdAt: -1, _id: -1 })
+        .lean(),
     ]);
 
     res.json({
@@ -132,6 +118,9 @@ router.get('/:id', async (req, res, next) => {
       comments,
       versions,
       reviews,
+      lastReview: lastRun
+        ? { mode: lastRun.meta?.mode || null, reason: lastRun.meta?.reason || null, message: lastRun.meta?.message || null }
+        : null,
     });
   } catch (err) {
     next(err);
@@ -175,6 +164,8 @@ router.post('/:id/review', requireRole('creator', 'admin'), async (req, res, nex
         medium: count('medium'),
         low: count('low'),
         mode: result.mode,
+        reason: result.reason, // why the AI step did not run (null when it did)
+        message: result.message,
         dropped: result.dropped,
       },
     });

@@ -19,7 +19,7 @@ function detail(row) {
   const m = row.meta || {};
   switch (row.action) {
     case 'review_run':
-      return `Version ${m.version}: ${m.findings ?? 0} findings (${m.high ?? 0} high), ${m.mode}${m.dropped ? `, ${m.dropped} dropped` : ''}`;
+      return `Version ${m.version}: ${m.findings ?? 0} findings (${m.high ?? 0} high), ${m.mode}${m.dropped ? `, ${m.dropped} dropped` : ''}${m.message ? `. ${m.message}` : ''}`;
     case 'version_saved':
       return `Version ${m.version}`;
     case 'fixes_applied':

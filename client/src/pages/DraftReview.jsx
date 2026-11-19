@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Loader2, Play, ArrowLeft, Wand2, PencilLine, History, Eye, Send, MessageSquare, MessageSquareWarning, ChevronUp, ChevronDown } from 'lucide-react';
+import { Loader2, Play, ArrowLeft, ShieldCheck, Wand2, PencilLine, Lock, History, Eye, Send, MessageSquare, MessageSquareWarning } from 'lucide-react';
 import { api } from '../api.js';
 import StatusPill from '../components/StatusPill.jsx';
-import ReviewStatusPanel from '../components/ReviewStatusPanel.jsx';
+import DisclosureBanner from '../components/DisclosureBanner.jsx';
+import ReviewModeNotice, { modeChipLabel } from '../components/ReviewModeNotice.jsx';
 import HighlightedText from '../components/HighlightedText.jsx';
 import FindingCard from '../components/FindingCard.jsx';
 import VersionList from '../components/VersionList.jsx';
@@ -15,14 +16,15 @@ const MAX_TEXT = 10000;
 const REVIEWABLE = ['draft', 'checked']; // same rule as the server (review and decisions)
 const EDITABLE = ['draft', 'checked', 'changes_requested']; // new versions (edit, apply fixes)
 
-// Scrolls `container` so that `el` sits in the middle of it. Only the container moves,
-// never the whole page, so the text pane and the findings pane can both be aligned.
-function centerIn(container, el) {
-  if (!container || !el) return;
-  const c = container.getBoundingClientRect();
-  const r = el.getBoundingClientRect();
-  const top = container.scrollTop + (r.top - c.top) - c.height / 2 + r.height / 2;
-  container.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
+// Summary bar text, e.g. "5 findings: 3 high, 1 medium, 1 low. 2 pending."
+function summarise(findings) {
+  if (findings.length === 0) return 'No findings.';
+  const n = (k, v) => findings.filter((f) => f[k] === v).length;
+  const word = findings.length === 1 ? 'finding' : 'findings';
+  let text = `${findings.length} ${word}: ${n('severity', 'high')} high, ${n('severity', 'medium')} medium, ${n('severity', 'low')} low. ${n('decision', 'pending')} pending.`;
+  const [a, e, d] = [n('decision', 'accepted'), n('decision', 'edited'), n('decision', 'dismissed')];
+  if (a + e + d > 0) text += ` ${a} accepted, ${e} edited, ${d} dismissed.`;
+  return text;
 }
 
 export default function DraftReview() {
@@ -36,7 +38,9 @@ export default function DraftReview() {
   const [submitting, setSubmitting] = useState(false);
   const [actionError, setActionError] = useState('');
   const [notice, setNotice] = useState('');
-  const [mode, setMode] = useState(null); // mode of the last review run in this session
+  // { mode, reason, message } of the last review run in this session. The server also sends
+  // data.lastReview (kept in the audit log), which wins; this is only a fallback.
+  const [reviewInfo, setReviewInfo] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [tab, setTab] = useState('findings'); // 'findings' | 'comments' | 'history'
 
@@ -51,9 +55,6 @@ export default function DraftReview() {
   const [saving, setSaving] = useState(false);
 
   const cardRefs = useRef({});
-  const textScrollRef = useRef(null); // scrollable draft text pane
-  const findingsScrollRef = useRef(null); // scrollable list of finding cards
-  const [scrollRequest, setScrollRequest] = useState(null); // { id, source, n } set by select()
 
   const load = useCallback(async () => {
     setLoadError('');
@@ -110,22 +111,6 @@ export default function DraftReview() {
     () => [...shownFindings].sort((a, b) => a.start - b.start || a.end - b.end),
     [shownFindings]
   );
-  const selectedIndex = sorted.findIndex((f) => f._id === selectedId);
-
-  // After a selection has rendered, bring the highlight AND its card into view together.
-  // Two columns: each pane scrolls by itself. One column (narrow screens): scroll to the
-  // pane the user did not click in.
-  useEffect(() => {
-    if (!scrollRequest) return;
-    const card = document.getElementById(`card-${scrollRequest.id}`);
-    const mark = document.getElementById(`hl-${scrollRequest.id}`);
-    if (window.matchMedia('(min-width: 1024px)').matches) {
-      centerIn(textScrollRef.current, mark);
-      centerIn(findingsScrollRef.current, card);
-    } else {
-      (scrollRequest.source === 'card' ? mark : card)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
-  }, [scrollRequest]);
 
   async function runReview() {
     setRunning(true);
@@ -133,7 +118,7 @@ export default function DraftReview() {
     setNotice('');
     try {
       const result = await api.post(`/api/drafts/${id}/review`);
-      setMode(result.mode);
+      setReviewInfo({ mode: result.mode, reason: result.reason, message: result.message });
       setSelectedId(null);
       setViewVersion(null);
       await load(); // reload so the page shows the saved findings and the new status
@@ -218,19 +203,12 @@ export default function DraftReview() {
     setData((d) => ({ ...d, comments: [...d.comments, comment] }));
   }
 
-  // source: 'text' (highlight clicked), 'card' (card clicked) or 'nav' (Previous/Next).
-  function select(findingId, source = 'nav') {
+  function select(findingId) {
     setSelectedId(findingId);
-    setTab('findings'); // the card must be on screen before we scroll to it (see the effect above)
-    setScrollRequest({ id: findingId, source, n: Date.now() });
-  }
-
-  // Previous / Next over the findings in text order, wrapping around at both ends.
-  function stepSelection(delta) {
-    const n = sorted.length;
-    if (n === 0) return;
-    const next = selectedIndex === -1 ? (delta > 0 ? 0 : n - 1) : (selectedIndex + delta + n) % n;
-    select(sorted[next]._id, 'nav');
+    setTab('findings');
+    // Highlight click scrolls to the card; card click scrolls to the highlight.
+    document.getElementById(`card-${findingId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    document.getElementById(`hl-${findingId}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 
   function viewOf(n) {
@@ -273,10 +251,18 @@ export default function DraftReview() {
   const canDecideReview = (role === 'reviewer' || role === 'admin') && draft.status === 'submitted' && !viewingOld;
   const lastChangeRequest = [...reviews].reverse().find((r) => r.decision === 'changes_requested');
   const lastApproval = [...reviews].reverse().find((r) => r.decision === 'approved');
+  // How the review of the current version was produced. A draft still in "draft" has no
+  // review for this version yet, and an old version has no stored mode, so show nothing.
+  const lastReview = !viewingOld && draft.status !== 'draft' ? data.lastReview || reviewInfo : null;
   const backTo = role === 'reviewer' ? '/queue' : '/drafts';
   const busy = running || applying || saving || submitting;
   const unchanged = editText === data.text;
   const tooLong = editText.length > MAX_TEXT;
+
+  let summary;
+  if (viewingOld) summary = shownFindings.length ? summarise(shownFindings) : 'No findings were recorded for this version.';
+  else if (shownFindings.length === 0 && draft.status === 'draft') summary = 'Not reviewed yet. Run review to check this version.';
+  else summary = summarise(shownFindings);
 
   const primaryBtn =
     'inline-flex items-center gap-2 rounded-md px-4 py-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-slate-900';
@@ -358,23 +344,36 @@ export default function DraftReview() {
       </header>
 
       <div className="mt-4 space-y-3">
-        <ReviewStatusPanel
-          findings={shownFindings}
-          status={draft.status}
-          role={role}
-          viewingOld={viewingOld}
-          mode={mode}
-          rulesOnlyWorkspace={rulesOnlyWorkspace}
-          lastApproval={lastApproval}
-        />
+        <DisclosureBanner rulesOnly={rulesOnlyWorkspace} />
+        {draft.status === 'approved' && (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">
+            <Lock size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            <span>
+              This draft is approved and read-only. It can no longer be edited.
+              {lastApproval?.note && <> Reviewer note: {lastApproval.note}</>}
+            </span>
+          </div>
+        )}
         {draft.status === 'changes_requested' && (
           <div role="status" className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
             <MessageSquareWarning size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
             <span>
               {lastChangeRequest?.reviewerId?.name ? `${lastChangeRequest.reviewerId.name} asked for changes` : 'A reviewer asked for changes'}
               {lastChangeRequest?.note ? `: ${lastChangeRequest.note}` : '.'}
+              {isAuthor && ' Edit the text, run the review again and resubmit.'}
             </span>
           </div>
+        )}
+        {draft.status === 'submitted' && role === 'creator' && (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-violet-300 bg-violet-50 px-4 py-3 text-sm text-violet-950">
+            <Lock size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+            This draft is waiting for a reviewer, so it cannot be edited right now.
+          </div>
+        )}
+        {canSubmit && pendingHigh > 0 && (
+          <p role="status" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">
+            {pendingHigh} high severity {pendingHigh === 1 ? 'finding is' : 'findings are'} still pending. Accept, edit or dismiss (with a reason) each one before you submit.
+          </p>
         )}
         {viewingOld && (
           <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-300 bg-slate-100 px-4 py-3 text-sm text-slate-900">
@@ -385,6 +384,7 @@ export default function DraftReview() {
             </button>
           </div>
         )}
+        {lastReview && <ReviewModeNotice mode={lastReview.mode} reason={lastReview.reason} message={lastReview.message} />}
         {notice && (
           <p role="status" className="rounded-md border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950">{notice}</p>
         )}
@@ -392,6 +392,16 @@ export default function DraftReview() {
           <p role="alert" className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-900">{actionError}</p>
         )}
         {canDecideReview && <ReviewDecisionPanel draftId={id} onDone={onDecided} />}
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2 rounded-lg bg-slate-900 px-4 py-2.5 text-sm text-white" aria-live="polite">
+        <ShieldCheck size={16} aria-hidden="true" />
+        {summary}
+        {lastReview?.mode && (
+          <span className="ml-auto rounded-full bg-white/15 px-2.5 py-0.5 text-xs font-semibold">
+            {modeChipLabel(lastReview.mode, lastReview.reason)}
+          </span>
+        )}
       </div>
 
       <div className="mt-4 grid gap-6 lg:grid-cols-2">
@@ -437,9 +447,7 @@ export default function DraftReview() {
               Could not load this version: {oldError}
             </p>
           ) : (
-            <div ref={textScrollRef} className="p-2 lg:max-h-[68vh] lg:overflow-y-auto">
-              <HighlightedText text={shownText} findings={sorted} selectedId={selectedId} onSelect={select} />
-            </div>
+            <HighlightedText text={shownText} findings={sorted} selectedId={selectedId} onSelect={select} />
           )}
         </section>
 
@@ -481,45 +489,7 @@ export default function DraftReview() {
                       : 'No issues found in this version.'}
                 </div>
               )}
-              {sorted.length > 0 && (
-                <div
-                  role="toolbar"
-                  aria-label="Finding navigation"
-                  onKeyDown={(e) => {
-                    if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-                      e.preventDefault();
-                      stepSelection(1);
-                    } else if (e.key === 'ArrowUp' || e.key === 'ArrowLeft') {
-                      e.preventDefault();
-                      stepSelection(-1);
-                    }
-                  }}
-                  className="mb-3 flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2"
-                >
-                  <span className="text-sm font-semibold text-slate-900" aria-live="polite">
-                    {selectedIndex === -1
-                      ? `No finding selected · ${sorted.length} in total`
-                      : `Finding ${selectedIndex + 1} of ${sorted.length}`}
-                  </span>
-                  <div className="ml-auto flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => stepSelection(-1)}
-                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline focus:outline-2 focus:outline-slate-900"
-                    >
-                      <ChevronUp size={14} aria-hidden="true" /> Previous
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => stepSelection(1)}
-                      className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1 text-sm font-medium text-slate-800 hover:bg-slate-50 focus:outline focus:outline-2 focus:outline-slate-900"
-                    >
-                      Next <ChevronDown size={14} aria-hidden="true" />
-                    </button>
-                  </div>
-                </div>
-              )}
-              <div ref={findingsScrollRef} className="space-y-3 p-1 lg:max-h-[62vh] lg:overflow-y-auto">
+              <div className="space-y-3">
                 {sorted.map((f, i) => (
                   <FindingCard
                     key={f._id}

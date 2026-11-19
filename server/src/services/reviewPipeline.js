@@ -9,18 +9,20 @@ import { segment } from './segment.js';
 import { runRuleChecks } from './ruleChecks.js';
 import { maskPii } from './piiMask.js';
 import { verifyAiFindings } from './verifier.js';
+import { classifyAiFailure, AI_REASONS } from './aiFailure.js';
 
 // Steps 3 and 4 of SRS 8: ask the model, then verify its answer.
-// Returns { findings, dropped } when the AI review worked, or null when the review
-// must fall back to rules only. It never throws: the review must never crash the
-// request. Log lines name the reason but never contain draft text or the API key.
+// Returns { findings, dropped } when the AI review worked, or { reason, message } when
+// the review must fall back to rules only. It never throws: the review must never
+// crash the request. Log lines name the reason but never contain draft text or the API key.
 async function tryAiReview({ workspace, text, clauses, facts, ruleFindings }) {
-  if (workspace.aiEnabled === false) return null; // an admin chose rules-only: not an error
+  // An admin chose rules-only: not an error.
+  if (workspace.aiEnabled === false) return { reason: 'disabled', message: AI_REASONS.disabled };
   if (!isLlmConfigured()) {
     console.warn('[review] AI review skipped: set LLM_PROVIDER (gemini), LLM_API_KEY and LLM_MODEL');
-    return null;
+    return { reason: 'not_configured', message: AI_REASONS.not_configured };
   }
-  if (!clauses.length && !facts.length) return null; // nothing the model could cite
+  if (!clauses.length && !facts.length) return { reason: 'disabled', message: AI_REASONS.disabled }; // nothing the model could cite
 
   const startedAt = Date.now();
   try {
@@ -32,14 +34,14 @@ async function tryAiReview({ workspace, text, clauses, facts, ruleFindings }) {
     const result = verifyAiFindings({ raw, text, clauses, facts, ruleFindings });
     if (result.parseFailed) {
       console.warn('[review] AI answer was not a JSON array; using rules only');
-      return null;
+      return { reason: 'parse_failed', message: AI_REASONS.parse_failed };
     }
     const aiCount = result.findings.filter((f) => f.origin === 'ai').length;
     console.log(`[review] AI review ok in ${Date.now() - startedAt} ms: ${aiCount} AI findings, ${result.dropped} dropped`);
     return result;
   } catch (err) {
     console.warn(`[review] AI review unavailable, using rules only: ${err.message}`);
-    return null;
+    return classifyAiFailure(err);
   }
 }
 
@@ -66,11 +68,15 @@ export async function runReview({ draft, workspace }) {
   let findings = ruleFindings;
   let mode = 'rules-only';
   let dropped = 0;
+  let reason = null; // why the AI step did not run (null when mode is 'ai+rules')
+  let message = null; // the same, as a sentence for the UI
   const ai = await tryAiReview({ workspace, text, clauses, facts, ruleFindings });
-  if (ai) {
+  if (ai.findings) {
     findings = ai.findings;
     dropped = ai.dropped;
     mode = 'ai+rules';
+  } else {
+    ({ reason, message } = ai);
   }
 
   // Step 5: replace this version's findings, then mark the draft as checked.
@@ -81,5 +87,6 @@ export async function runReview({ draft, workspace }) {
   draft.status = 'checked';
   await draft.save();
 
-  return { findings: saved, mode, dropped };
+  // `reason` and `message` are additions to the SRS response { findings, mode, dropped }.
+  return { findings: saved, mode, dropped, reason, message };
 }
