@@ -1,0 +1,109 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" width="900" height="560" font-family="Segoe UI, Helvetica, Arial, sans-serif">
+  <title>BrandLens architecture</title>
+  <desc>A React client calls an Express API, which stores data in MongoDB Atlas. The review pipeline runs rule checks, masks personal data, asks Gemini, verifies every finding against the knowledge base and saves the result. If Gemini is unavailable the review falls back to rules only.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#334155"/>
+    </marker>
+  </defs>
+  <rect width="900" height="560" fill="#f8fafc"/>
+  <text x="30" y="36" font-size="22" font-weight="700" fill="#0f172a">BrandLens architecture</text>
+  <text x="30" y="58" font-size="13" fill="#475569">Every finding must cite a real clause or fact: "no source, no flag".</text>
+
+  <!-- Browser -->
+  <rect x="30" y="90" width="210" height="170" rx="10" fill="#ffffff" stroke="#0f766e" stroke-width="2"/>
+  <text x="135" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#0f766e">Web client (Vercel)</text>
+  <text x="135" y="140" text-anchor="middle" font-size="12" fill="#334155">React 18 + Vite + Tailwind</text>
+  <text x="135" y="168" text-anchor="middle" font-size="12" fill="#334155">Draft list, review page,</text>
+  <text x="135" y="186" text-anchor="middle" font-size="12" fill="#334155">knowledge base, review queue,</text>
+  <text x="135" y="204" text-anchor="middle" font-size="12" fill="#334155">comments, history, audit trail</text>
+  <text x="135" y="238" text-anchor="middle" font-size="12" fill="#334155">Roles: admin, creator, reviewer</text>
+
+  <!-- API -->
+  <rect x="320" y="90" width="260" height="170" rx="10" fill="#ffffff" stroke="#1d4ed8" stroke-width="2"/>
+  <text x="450" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#1d4ed8">Express API (Render)</text>
+  <text x="450" y="140" text-anchor="middle" font-size="12" fill="#334155">Node 20, JWT auth, role checks</text>
+  <text x="450" y="162" text-anchor="middle" font-size="12" fill="#334155">zod validation, helmet, CORS,</text>
+  <text x="450" y="180" text-anchor="middle" font-size="12" fill="#334155">rate limits, central error handler</text>
+  <text x="450" y="208" text-anchor="middle" font-size="12" fill="#334155">Drafts, versions, findings,</text>
+  <text x="450" y="226" text-anchor="middle" font-size="12" fill="#334155">approval workflow, comments,</text>
+  <text x="450" y="244" text-anchor="middle" font-size="12" fill="#334155">audit log, knowledge base</text>
+
+  <!-- Atlas -->
+  <rect x="660" y="90" width="210" height="170" rx="10" fill="#ffffff" stroke="#15803d" stroke-width="2"/>
+  <text x="765" y="116" text-anchor="middle" font-size="15" font-weight="700" fill="#15803d">MongoDB Atlas</text>
+  <text x="765" y="140" text-anchor="middle" font-size="12" fill="#334155">Every record has a workspaceId</text>
+  <text x="765" y="168" text-anchor="middle" font-size="12" fill="#334155">Clauses, facts, terms</text>
+  <text x="765" y="186" text-anchor="middle" font-size="12" fill="#334155">Drafts, versions, findings</text>
+  <text x="765" y="204" text-anchor="middle" font-size="12" fill="#334155">Comments, reviews</text>
+  <text x="765" y="222" text-anchor="middle" font-size="12" fill="#334155">Audit log, users</text>
+
+  <line x1="240" y1="175" x2="318" y2="175" stroke="#334155" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+  <text x="279" y="166" text-anchor="middle" font-size="11" fill="#334155">HTTPS + JWT</text>
+  <line x1="580" y1="175" x2="658" y2="175" stroke="#334155" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+  <text x="619" y="166" text-anchor="middle" font-size="11" fill="#334155">Mongoose</text>
+
+  <!-- API to pipeline -->
+  <line x1="450" y1="262" x2="450" y2="318" stroke="#334155" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Pipeline -->
+  <text x="30" y="316" font-size="15" font-weight="700" fill="#0f172a">Review pipeline</text>
+  <text x="150" y="316" font-size="12" fill="#475569">POST /api/drafts/:id/review, runs on the current version</text>
+
+  <g font-size="11" text-anchor="middle">
+    <rect x="30" y="334" width="125" height="86" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <text x="92" y="356" font-weight="700" fill="#0f172a">1. Segment</text>
+    <text x="92" y="378" fill="#334155">Sentences with</text>
+    <text x="92" y="394" fill="#334155">exact offsets</text>
+
+    <rect x="170" y="334" width="125" height="86" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <text x="232" y="356" font-weight="700" fill="#0f172a">2. Rule checks</text>
+    <text x="232" y="378" fill="#334155">Banned terms, claims,</text>
+    <text x="232" y="394" fill="#334155">stale facts, shouting</text>
+
+    <rect x="310" y="334" width="125" height="86" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <text x="372" y="356" font-weight="700" fill="#0f172a">3. Mask PII</text>
+    <text x="372" y="378" fill="#334155">Emails and phone</text>
+    <text x="372" y="394" fill="#334155">numbers hidden</text>
+
+    <rect x="450" y="334" width="125" height="86" rx="8" fill="#ecfeff" stroke="#0f766e" stroke-width="2"/>
+    <text x="512" y="356" font-weight="700" fill="#0f766e">4. Gemini review</text>
+    <text x="512" y="378" fill="#334155">Only the approved</text>
+    <text x="512" y="394" fill="#334155">clauses and facts</text>
+
+    <rect x="590" y="334" width="125" height="86" rx="8" fill="#f0fdf4" stroke="#15803d" stroke-width="2"/>
+    <text x="652" y="356" font-weight="700" fill="#15803d">5. Verifier</text>
+    <text x="652" y="378" fill="#334155">Drops findings with</text>
+    <text x="652" y="394" fill="#334155">no real source/quote</text>
+
+    <rect x="730" y="334" width="125" height="86" rx="8" fill="#ffffff" stroke="#64748b" stroke-width="1.5"/>
+    <text x="792" y="356" font-weight="700" fill="#0f172a">6. Save</text>
+    <text x="792" y="378" fill="#334155">Findings, status,</text>
+    <text x="792" y="394" fill="#334155">audit log row</text>
+  </g>
+  <g stroke="#334155" stroke-width="2" marker-end="url(#arrow)">
+    <line x1="155" y1="377" x2="168" y2="377"/>
+    <line x1="295" y1="377" x2="308" y2="377"/>
+    <line x1="435" y1="377" x2="448" y2="377"/>
+    <line x1="575" y1="377" x2="588" y2="377"/>
+    <line x1="715" y1="377" x2="728" y2="377"/>
+  </g>
+
+  <!-- Gemini external -->
+  <rect x="450" y="466" width="125" height="64" rx="8" fill="#ffffff" stroke="#0f766e" stroke-width="2" stroke-dasharray="5 4"/>
+  <text x="512" y="492" text-anchor="middle" font-size="13" font-weight="700" fill="#0f766e">Gemini API</text>
+  <text x="512" y="512" text-anchor="middle" font-size="11" fill="#334155">external service</text>
+  <line x1="512" y1="422" x2="512" y2="464" stroke="#0f766e" stroke-width="2" marker-end="url(#arrow)" marker-start="url(#arrow)"/>
+
+  <!-- Fallback -->
+  <rect x="30" y="456" width="400" height="60" rx="8" fill="#fffbeb" stroke="#b45309" stroke-width="1.5"/>
+  <text x="44" y="478" font-size="12" font-weight="700" fill="#92400e">Fallback</text>
+  <text x="44" y="496" font-size="12" fill="#78350f">If Gemini is switched off, times out or answers badly,</text>
+  <text x="44" y="510" font-size="12" fill="#78350f">the review keeps the rule findings (mode: rules-only).</text>
+
+  <rect x="600" y="446" width="270" height="84" rx="8" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="614" y="468" font-size="12" font-weight="700" fill="#0f172a">Humans decide</text>
+  <text x="614" y="486" font-size="12" fill="#334155">Creator: accept, edit or dismiss.</text>
+  <text x="614" y="502" font-size="12" fill="#334155">Reviewer: approve or request changes.</text>
+  <text x="614" y="518" font-size="12" fill="#334155">Approved drafts are read-only.</text>
+</svg>
