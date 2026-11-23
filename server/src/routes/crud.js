@@ -15,6 +15,9 @@ import { validate } from '../middleware/validate.js';
 //   createSchema/updateSchema zod schemas for the request body (update defaults to create)
 //   checkWrite(req)          optional: return an error string to reject a create/update
 //   checkDelete(doc, req)    optional: return an error string to block a delete
+//   afterWrite(item, req)    optional: runs after a successful create or update. It is
+//                            NOT awaited and its errors are only logged, so a slow or failing
+//                            follow-up (e.g. fact embeddings) never delays or fails the save.
 export function crudRouter({
   Model,
   label,
@@ -23,6 +26,7 @@ export function crudRouter({
   updateSchema = createSchema,
   checkWrite,
   checkDelete,
+  afterWrite,
 }) {
   const router = Router();
   router.use(auth);
@@ -34,6 +38,13 @@ export function crudRouter({
       : res.status(400).json({ message: 'Invalid id' });
 
   // 11000 = Mongo duplicate-key error (the unique workspaceId+code index).
+  const runAfterWrite = (item, req) => {
+    if (!afterWrite) return;
+    Promise.resolve()
+      .then(() => afterWrite(item, req))
+      .catch((err) => console.warn(`[${label}] follow-up after save failed: ${err.message}`));
+  };
+
   const fail = (err, res, next) =>
     err?.code === 11000
       ? res.status(409).json({ message: `A ${label} with that code already exists` })
@@ -58,6 +69,7 @@ export function crudRouter({
       // workspaceId always comes from the token, never from the request body.
       const item = await Model.create({ ...req.body, workspaceId: req.workspaceId });
       res.status(201).json(item);
+      runAfterWrite(item, req);
     } catch (err) {
       fail(err, res, next);
     }
@@ -74,6 +86,7 @@ export function crudRouter({
       );
       if (!item) return res.status(404).json({ message: `${label} not found` });
       res.json(item);
+      runAfterWrite(item, req);
     } catch (err) {
       fail(err, res, next);
     }

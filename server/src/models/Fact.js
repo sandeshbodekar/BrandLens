@@ -12,6 +12,15 @@ const factSchema = new mongoose.Schema(
     validFrom: { type: Date, required: true },
     validTo: { type: Date, default: null },
     active: { type: Boolean, default: true },
+
+    // Round 3: the fact's embedding, used to match claims in a draft to the closest facts.
+    // All three are hidden from normal queries (select: false), so the 768 numbers never
+    // reach the Knowledge page or any API response. Read them with .select('+embedding').
+    // embeddingHash says which text, model and size the vector was made from, so a changed
+    // fact (or a changed model) is noticed and re-embedded; nothing else is recomputed.
+    embedding: { type: [Number], select: false, default: undefined },
+    embeddingModel: { type: String, select: false },
+    embeddingHash: { type: String, select: false },
   },
   { timestamps: true }
 );

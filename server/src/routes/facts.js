@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { Fact } from '../models/Fact.js';
 import { crudRouter } from './crud.js';
+import { requireRole } from '../middleware/requireRole.js';
+import { ensureFactEmbeddings } from '../services/factEmbeddings.js';
 
 // "" or a missing value means "no end date" -> null.
 // z.coerce.date() turns "2026-10-01" (from <input type="date">) into a Date.
@@ -29,10 +31,26 @@ const createSchema = editable
   .refine(...endsAfterStart);
 const updateSchema = editable.refine(...endsAfterStart);
 
-export default crudRouter({
+const router = crudRouter({
   Model: Fact,
   label: 'fact',
   sort: { code: 1 },
   createSchema,
   updateSchema,
+  // Round 3: after a fact is added or changed, embed it in the background. Only facts whose
+  // text changed are sent to the embedding service. A failure here is logged, never shown.
+  afterWrite: (fact) => ensureFactEmbeddings(fact.workspaceId),
 });
+
+// POST /api/facts/reindex (admin): re-embed every active fact now and report what happened,
+// e.g. after switching LLM_EMBED_MODEL. The router already requires a login for every route.
+// This path cannot clash with PUT/DELETE /:id, which use other HTTP methods.
+router.post('/reindex', requireRole('admin'), async (req, res, next) => {
+  try {
+    res.json(await ensureFactEmbeddings(req.workspaceId, { force: true }));
+  } catch (err) {
+    next(err);
+  }
+});
+
+export default router;

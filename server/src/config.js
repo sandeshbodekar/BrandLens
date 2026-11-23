@@ -14,11 +14,16 @@ export const config = {
     .map((o) => o.trim().replace(/\/$/, ''))
     .filter(Boolean),
 
-  // Read now so config.js is complete; used from Phase 3.
   llm: {
     provider: process.env.LLM_PROVIDER,
     apiKey: process.env.LLM_API_KEY,
     model: process.env.LLM_MODEL,
     timeoutMs: Number(process.env.LLM_TIMEOUT_MS) || 20000,
+
+    // Round 3: embeddings for claim-to-fact matching (llm/embed.js).
+    // This must be an EMBEDDING model (gemini-embedding-2 or gemini-embedding-001),
+    // not the text model in LLM_MODEL. Leave empty to turn matching off.
+    embedModel: process.env.LLM_EMBED_MODEL,
+    embedDimensions: Number(process.env.LLM_EMBED_DIMENSIONS) || 768,
   },
 };
